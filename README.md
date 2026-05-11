@@ -25,6 +25,7 @@ Global overrides are available for one-off runs:
 
 ```bash
 deepcode --format markdown --output-dir reports --max-files 80 analyze ./src
+deepcode --max-concurrency 8 --max-total-bytes 4000000 understand .
 deepcode --model deepseek-v4-pro --base-url https://api.deepseek.com report .
 deepcode --config ./project.deepcode.toml --no-cache plan . --goal "split API and worker"
 ```
@@ -46,6 +47,7 @@ cp .deepcode.example.toml .deepcode.toml
 - `max_file_bytes = 200000`
 - `max_files = 200`
 - `max_total_bytes = 2000000`
+- `max_concurrency = 4`
 
 DeepCode intentionally does not read the API key from environment variables.
 
@@ -65,6 +67,13 @@ deepcode --no-cache analyze ./src
 
 DeepCode skips common generated and dependency paths including `.git`, `target`, `node_modules`, `dist`, `build`, and lock files. Text files larger than `max_file_bytes` are truncated before being sent to the model.
 
+Scanning is scheduled in two stages:
+
+- first pass: walk the tree, read metadata, apply ignore rules, and enforce `max_files` plus `max_total_bytes`
+- second pass: read selected files with bounded parallelism controlled by `max_concurrency`
+
+Only `max_file_bytes + 1` bytes are read from each selected file, so very large text files are not fully loaded into memory just to be truncated.
+
 The scanner also records local evidence before the model call:
 
 - files read and skipped
@@ -73,7 +82,7 @@ The scanner also records local evidence before the model call:
 - per-language file, byte, and code-line counts
 - per-file line, blank, comment, and longest-line metrics
 
-`max_files` and `max_total_bytes` cap the amount of project content sent to the model for cost and latency control.
+`max_files` and `max_total_bytes` cap the amount of project content sent to the model for cost and latency control. Increase `max_concurrency` for fast local disks; keep it lower on spinning disks, network filesystems, or memory-constrained machines.
 
 ## Capability Map
 

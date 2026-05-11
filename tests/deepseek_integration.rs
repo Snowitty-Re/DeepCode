@@ -32,6 +32,7 @@ fn sends_openai_compatible_chat_completion_request() {
         max_file_bytes: 200_000,
         max_files: 200,
         max_total_bytes: 2_000_000,
+        max_concurrency: 4,
         cache_enabled: false,
     };
     let client = DeepSeekClient::new(&config).unwrap();

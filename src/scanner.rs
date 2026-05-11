@@ -2,7 +2,9 @@ use anyhow::{Context, Result};
 use serde::Serialize;
 use std::ffi::OsStr;
 use std::fs;
+use std::io::Read;
 use std::path::{Path, PathBuf};
+use std::thread;
 use walkdir::{DirEntry, WalkDir};
 
 const IGNORED_DIRS: &[&str] = &[
@@ -83,6 +85,14 @@ pub struct ScanOptions {
     pub max_file_bytes: u64,
     pub max_files: usize,
     pub max_total_bytes: u64,
+    pub max_concurrency: usize,
+}
+
+#[derive(Debug, Clone)]
+struct CandidateFile {
+    root: PathBuf,
+    path: PathBuf,
+    bytes: u64,
 }
 
 pub fn scan_path(path: impl AsRef<Path>, options: ScanOptions) -> Result<ProjectSnapshot> {
@@ -95,12 +105,9 @@ pub fn scan_path(path: impl AsRef<Path>, options: ScanOptions) -> Result<Project
         return scan_file_root(root, options);
     }
 
-    let mut snapshot = ProjectSnapshot {
-        root: root.clone(),
-        files: Vec::new(),
-        skipped: Vec::new(),
-        summary: ScanSummary::default(),
-    };
+    let mut skipped = Vec::new();
+    let mut candidates = Vec::new();
+    let mut scheduled_bytes = 0_u64;
 
     for entry in WalkDir::new(&root)
         .into_iter()
@@ -109,7 +116,7 @@ pub fn scan_path(path: impl AsRef<Path>, options: ScanOptions) -> Result<Project
         let entry = match entry {
             Ok(entry) => entry,
             Err(error) => {
-                snapshot.skipped.push(SkippedFile {
+                skipped.push(SkippedFile {
                     path: error
                         .path()
                         .map(Path::to_path_buf)
@@ -126,15 +133,15 @@ pub fn scan_path(path: impl AsRef<Path>, options: ScanOptions) -> Result<Project
 
         let file_path = entry.path();
         if is_ignored_file(file_path) {
-            snapshot.skipped.push(SkippedFile {
+            skipped.push(SkippedFile {
                 path: relative_path(&root, file_path),
                 reason: "ignored lock or generated file".to_string(),
             });
             continue;
         }
 
-        if snapshot.files.len() >= options.max_files {
-            snapshot.skipped.push(SkippedFile {
+        if candidates.len() >= options.max_files {
+            skipped.push(SkippedFile {
                 path: relative_path(&root, file_path),
                 reason: format!("scan file limit reached ({})", options.max_files),
             });
@@ -144,33 +151,45 @@ pub fn scan_path(path: impl AsRef<Path>, options: ScanOptions) -> Result<Project
         let bytes = match fs::metadata(file_path) {
             Ok(metadata) => metadata.len(),
             Err(error) => {
-                snapshot.skipped.push(SkippedFile {
+                skipped.push(SkippedFile {
                     path: relative_path(&root, file_path),
                     reason: format!("failed to read metadata: {error}"),
                 });
                 continue;
             }
         };
-        if snapshot.summary.bytes_read.saturating_add(bytes) > options.max_total_bytes {
-            snapshot.skipped.push(SkippedFile {
+        if scheduled_bytes.saturating_add(bytes) > options.max_total_bytes {
+            skipped.push(SkippedFile {
                 path: relative_path(&root, file_path),
                 reason: format!("scan byte budget exceeded ({})", options.max_total_bytes),
             });
             continue;
         }
+        scheduled_bytes += bytes;
+        candidates.push(CandidateFile {
+            root: root.clone(),
+            path: file_path.to_path_buf(),
+            bytes,
+        });
+    }
 
-        match scan_file(&root, file_path, options) {
-            Ok(file) => {
-                snapshot.summary.bytes_read += file.bytes;
-                snapshot.files.push(file);
-            }
-            Err(error) => snapshot.skipped.push(SkippedFile {
-                path: relative_path(&root, file_path),
+    let mut files = Vec::new();
+    for result in read_candidates(candidates, options) {
+        match result {
+            Ok(file) => files.push(file),
+            Err((path, error)) => skipped.push(SkippedFile {
+                path,
                 reason: error.to_string(),
             }),
         }
     }
 
+    let mut snapshot = ProjectSnapshot {
+        root,
+        files,
+        skipped,
+        summary: ScanSummary::default(),
+    };
     snapshot
         .files
         .sort_by(|left, right| left.path.cmp(&right.path));
@@ -202,7 +221,7 @@ fn scan_file_root(path: PathBuf, options: ScanOptions) -> Result<ProjectSnapshot
         return Ok(snapshot);
     }
 
-    match scan_file(&root, &path, options) {
+    match scan_file(&root, &path, options, None) {
         Ok(file) => snapshot.files.push(file),
         Err(error) => snapshot.skipped.push(SkippedFile {
             path: relative_path(&root, &path),
@@ -214,16 +233,72 @@ fn scan_file_root(path: PathBuf, options: ScanOptions) -> Result<ProjectSnapshot
     Ok(snapshot)
 }
 
-fn scan_file(root: &Path, path: &Path, options: ScanOptions) -> Result<ScannedFile> {
-    let metadata = fs::metadata(path)
-        .with_context(|| format!("failed to read metadata for {}", path.display()))?;
-    let bytes = metadata.len();
+fn read_candidates(
+    candidates: Vec<CandidateFile>,
+    options: ScanOptions,
+) -> Vec<Result<ScannedFile, (PathBuf, anyhow::Error)>> {
+    if candidates.is_empty() {
+        return Vec::new();
+    }
+
+    let chunk_size = options.max_concurrency.max(1);
+    let mut output = Vec::with_capacity(candidates.len());
+    for chunk in candidates.chunks(chunk_size) {
+        let mut handles = Vec::with_capacity(chunk.len());
+        for candidate in chunk.iter().cloned() {
+            handles.push(thread::spawn(move || {
+                let relative = relative_path(&candidate.root, &candidate.path);
+                scan_file(
+                    &candidate.root,
+                    &candidate.path,
+                    options,
+                    Some(candidate.bytes),
+                )
+                .map_err(|error| (relative, error))
+            }));
+        }
+        for handle in handles {
+            match handle.join() {
+                Ok(result) => output.push(result),
+                Err(_) => output.push(Err((
+                    PathBuf::from("<thread>"),
+                    anyhow::anyhow!("scan worker thread panicked"),
+                ))),
+            }
+        }
+    }
+    output
+}
+
+fn scan_file(
+    root: &Path,
+    path: &Path,
+    options: ScanOptions,
+    known_bytes: Option<u64>,
+) -> Result<ScannedFile> {
+    let bytes = match known_bytes {
+        Some(bytes) => bytes,
+        None => fs::metadata(path)
+            .with_context(|| format!("failed to read metadata for {}", path.display()))?
+            .len(),
+    };
     let read_limit = options.max_file_bytes.saturating_add(1) as usize;
-    let mut content = fs::read_to_string(path)
+    let mut handle =
+        fs::File::open(path).with_context(|| format!("failed to open {}", path.display()))?;
+    let mut bytes_buffer = Vec::with_capacity(read_limit.min(64 * 1024));
+    handle
+        .by_ref()
+        .take(read_limit as u64)
+        .read_to_end(&mut bytes_buffer)
+        .with_context(|| format!("failed to read {}", path.display()))?;
+    let truncated =
+        bytes_buffer.len() > options.max_file_bytes as usize || bytes > options.max_file_bytes;
+    if bytes_buffer.len() > options.max_file_bytes as usize {
+        truncate_to_char_boundary(&mut bytes_buffer, options.max_file_bytes as usize);
+    }
+    let mut content = String::from_utf8(bytes_buffer)
         .with_context(|| format!("failed to read text file {}", path.display()))?;
-    let truncated = content.len() > read_limit;
     if truncated {
-        content.truncate(options.max_file_bytes as usize);
         content.push_str("\n\n[deepcode: file content truncated]\n");
     }
     let metrics = measure_content(&content);
@@ -236,6 +311,13 @@ fn scan_file(root: &Path, path: &Path, options: ScanOptions) -> Result<ScannedFi
         metrics,
         content,
     })
+}
+
+fn truncate_to_char_boundary(bytes: &mut Vec<u8>, max_len: usize) {
+    bytes.truncate(max_len);
+    while std::str::from_utf8(bytes).is_err() && !bytes.is_empty() {
+        bytes.pop();
+    }
 }
 
 fn summarize(files: &[ScannedFile], skipped: &[SkippedFile]) -> ScanSummary {
@@ -379,6 +461,7 @@ mod tests {
                 max_file_bytes: 100,
                 max_files: 100,
                 max_total_bytes: 1_000,
+                max_concurrency: 4,
             },
         )
         .unwrap();
@@ -405,6 +488,7 @@ mod tests {
                 max_file_bytes: 3,
                 max_files: 100,
                 max_total_bytes: 1_000,
+                max_concurrency: 4,
             },
         )
         .unwrap();
@@ -426,6 +510,7 @@ mod tests {
                 max_file_bytes: 100,
                 max_files: 100,
                 max_total_bytes: 1_000,
+                max_concurrency: 4,
             },
         )
         .unwrap();
@@ -446,6 +531,7 @@ mod tests {
                 max_file_bytes: 100,
                 max_files: 1,
                 max_total_bytes: 1_000,
+                max_concurrency: 4,
             },
         )
         .unwrap();
@@ -467,6 +553,7 @@ mod tests {
                 max_file_bytes: 100,
                 max_files: 100,
                 max_total_bytes: 10,
+                max_concurrency: 4,
             },
         )
         .unwrap();
@@ -474,6 +561,61 @@ mod tests {
         assert_eq!(snapshot.files.len(), 1);
         assert_eq!(snapshot.skipped.len(), 1);
         assert!(snapshot.skipped[0].reason.contains("scan byte budget"));
+    }
+
+    #[test]
+    fn scans_with_bounded_parallelism_and_stable_order() {
+        let dir = temp_dir("parallel");
+        fs::write(dir.join("b.rs"), "fn b() {}\n").unwrap();
+        fs::write(dir.join("a.rs"), "fn a() {}\n").unwrap();
+        fs::write(dir.join("c.rs"), "fn c() {}\n").unwrap();
+
+        let snapshot = scan_path(
+            &dir,
+            ScanOptions {
+                max_file_bytes: 100,
+                max_files: 100,
+                max_total_bytes: 1_000,
+                max_concurrency: 2,
+            },
+        )
+        .unwrap();
+
+        let paths = snapshot
+            .files
+            .iter()
+            .map(|file| file.path.clone())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            paths,
+            vec![
+                PathBuf::from("a.rs"),
+                PathBuf::from("b.rs"),
+                PathBuf::from("c.rs")
+            ]
+        );
+    }
+
+    #[test]
+    fn truncates_utf8_at_valid_boundary() {
+        let dir = temp_dir("utf8");
+        let file = dir.join("utf8.txt");
+        fs::write(&file, "你好abcdef").unwrap();
+
+        let snapshot = scan_path(
+            &file,
+            ScanOptions {
+                max_file_bytes: 4,
+                max_files: 100,
+                max_total_bytes: 1_000,
+                max_concurrency: 2,
+            },
+        )
+        .unwrap();
+
+        assert_eq!(snapshot.files.len(), 1);
+        assert!(snapshot.files[0].truncated);
+        assert!(snapshot.files[0].content.starts_with("你"));
     }
 
     fn temp_dir(name: &str) -> PathBuf {

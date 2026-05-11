@@ -16,6 +16,7 @@ pub struct Config {
     pub max_file_bytes: u64,
     pub max_files: usize,
     pub max_total_bytes: u64,
+    pub max_concurrency: usize,
     pub cache_enabled: bool,
 }
 
@@ -57,6 +58,7 @@ struct RawConfig {
     max_file_bytes: Option<u64>,
     max_files: Option<usize>,
     max_total_bytes: Option<u64>,
+    max_concurrency: Option<usize>,
     cache_enabled: Option<bool>,
 }
 
@@ -71,6 +73,7 @@ impl Default for Config {
             max_file_bytes: 200_000,
             max_files: 200,
             max_total_bytes: 2_000_000,
+            max_concurrency: 4,
             cache_enabled: true,
         }
     }
@@ -121,6 +124,9 @@ impl Config {
         if let Some(max_total_bytes) = raw.max_total_bytes {
             config.max_total_bytes = max_total_bytes;
         }
+        if let Some(max_concurrency) = raw.max_concurrency {
+            config.max_concurrency = max_concurrency;
+        }
         if let Some(cache_enabled) = raw.cache_enabled {
             config.cache_enabled = cache_enabled;
         }
@@ -146,6 +152,9 @@ impl Config {
         }
         if self.max_total_bytes == 0 {
             bail!("max_total_bytes must be greater than zero");
+        }
+        if self.max_concurrency == 0 {
+            bail!("max_concurrency must be greater than zero");
         }
         Ok(())
     }
@@ -190,6 +199,7 @@ mod tests {
         assert_eq!(config.max_file_bytes, 200_000);
         assert_eq!(config.max_files, 200);
         assert_eq!(config.max_total_bytes, 2_000_000);
+        assert_eq!(config.max_concurrency, 4);
         assert!(config.cache_enabled);
     }
 

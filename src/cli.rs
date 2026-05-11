@@ -30,6 +30,9 @@ pub struct Cli {
     /// Override the total byte budget sent to the model.
     #[arg(long, global = true)]
     pub max_total_bytes: Option<u64>,
+    /// Override the maximum number of files read concurrently.
+    #[arg(long, global = true)]
+    pub max_concurrency: Option<usize>,
     /// Disable reading and writing cached model responses for this run.
     #[arg(long, global = true)]
     pub no_cache: bool,

@@ -9,4 +9,5 @@ format = "both"
 max_file_bytes = 200000
 max_files = 200
 max_total_bytes = 2000000
+max_concurrency = 4
 cache_enabled = true

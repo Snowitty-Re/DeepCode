@@ -79,6 +79,9 @@ fn load_config(cli: &Cli) -> Result<Config> {
     if let Some(max_total_bytes) = cli.max_total_bytes {
         config.max_total_bytes = max_total_bytes;
     }
+    if let Some(max_concurrency) = cli.max_concurrency {
+        config.max_concurrency = max_concurrency;
+    }
     config.validate_public()?;
     Ok(config)
 }
@@ -96,6 +99,7 @@ fn run_workflow(
             max_file_bytes: config.max_file_bytes,
             max_files: config.max_files,
             max_total_bytes: config.max_total_bytes,
+            max_concurrency: config.max_concurrency,
         },
     )?;
     let cache_enabled = config.cache_enabled && !no_cache;
@@ -223,6 +227,7 @@ fn scan_for_config(path: &std::path::Path, config: &Config) -> Result<ProjectSna
             max_file_bytes: config.max_file_bytes,
             max_files: config.max_files,
             max_total_bytes: config.max_total_bytes,
+            max_concurrency: config.max_concurrency,
         },
     )
 }
