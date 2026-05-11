@@ -1,0 +1,183 @@
+use anyhow::{bail, Context, Result};
+use serde::Deserialize;
+use std::fs;
+use std::path::{Path, PathBuf};
+
+const CONFIG_FILE: &str = ".deepcode.toml";
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Config {
+    pub api_key: String,
+    pub base_url: String,
+    pub model: String,
+    pub output_dir: PathBuf,
+    pub format: ReportFormat,
+    pub max_file_bytes: u64,
+    pub cache_enabled: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ReportFormat {
+    Markdown,
+    Json,
+    Both,
+}
+
+#[derive(Debug, Deserialize)]
+struct RawConfig {
+    api_key: Option<String>,
+    base_url: Option<String>,
+    model: Option<String>,
+    output_dir: Option<PathBuf>,
+    format: Option<ReportFormat>,
+    max_file_bytes: Option<u64>,
+    cache_enabled: Option<bool>,
+}
+
+impl Default for Config {
+    fn default() -> Self {
+        Self {
+            api_key: String::new(),
+            base_url: "https://api.deepseek.com".to_string(),
+            model: "deepseek-v4-pro".to_string(),
+            output_dir: PathBuf::from("deepcode-reports"),
+            format: ReportFormat::Both,
+            max_file_bytes: 200_000,
+            cache_enabled: true,
+        }
+    }
+}
+
+impl Config {
+    pub fn load(start_dir: impl AsRef<Path>) -> Result<Self> {
+        let config_path = find_config(start_dir.as_ref()).with_context(|| {
+            format!(
+                "could not find {CONFIG_FILE}; copy .deepcode.example.toml to {CONFIG_FILE} and fill in api_key"
+            )
+        })?;
+        Self::load_file(config_path)
+    }
+
+    pub fn load_file(path: impl AsRef<Path>) -> Result<Self> {
+        let path = path.as_ref();
+        let content = fs::read_to_string(path)
+            .with_context(|| format!("failed to read config file {}", path.display()))?;
+        let raw: RawConfig = toml::from_str(&content)
+            .with_context(|| format!("failed to parse config file {}", path.display()))?;
+        let mut config = Config::default();
+        if let Some(api_key) = raw.api_key {
+            config.api_key = api_key;
+        }
+        if let Some(base_url) = raw.base_url {
+            config.base_url = base_url;
+        }
+        if let Some(model) = raw.model {
+            config.model = model;
+        }
+        if let Some(output_dir) = raw.output_dir {
+            config.output_dir = output_dir;
+        }
+        if let Some(format) = raw.format {
+            config.format = format;
+        }
+        if let Some(max_file_bytes) = raw.max_file_bytes {
+            config.max_file_bytes = max_file_bytes;
+        }
+        if let Some(cache_enabled) = raw.cache_enabled {
+            config.cache_enabled = cache_enabled;
+        }
+        config.validate()?;
+        Ok(config)
+    }
+
+    fn validate(&self) -> Result<()> {
+        if self.api_key.trim().is_empty() || self.api_key == "sk-your-deepseek-api-key" {
+            bail!("missing DeepSeek api_key in {CONFIG_FILE}; copy .deepcode.example.toml to {CONFIG_FILE} and fill it in manually");
+        }
+        if self.base_url.trim().is_empty() {
+            bail!("base_url cannot be empty");
+        }
+        if self.model.trim().is_empty() {
+            bail!("model cannot be empty");
+        }
+        if self.max_file_bytes == 0 {
+            bail!("max_file_bytes must be greater than zero");
+        }
+        Ok(())
+    }
+}
+
+fn find_config(start_dir: &Path) -> Option<PathBuf> {
+    let mut current = if start_dir.is_file() {
+        start_dir.parent()?.to_path_buf()
+    } else {
+        start_dir.to_path_buf()
+    };
+
+    loop {
+        let candidate = current.join(CONFIG_FILE);
+        if candidate.is_file() {
+            return Some(candidate);
+        }
+        if !current.pop() {
+            return None;
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn applies_defaults_for_optional_fields() {
+        let dir = temp_dir("defaults");
+        let path = dir.join(CONFIG_FILE);
+        fs::write(&path, "api_key = \"sk-test\"\n").unwrap();
+
+        let config = Config::load_file(&path).unwrap();
+
+        assert_eq!(config.api_key, "sk-test");
+        assert_eq!(config.base_url, "https://api.deepseek.com");
+        assert_eq!(config.model, "deepseek-v4-pro");
+        assert_eq!(config.output_dir, PathBuf::from("deepcode-reports"));
+        assert_eq!(config.format, ReportFormat::Both);
+        assert_eq!(config.max_file_bytes, 200_000);
+        assert!(config.cache_enabled);
+    }
+
+    #[test]
+    fn rejects_missing_api_key() {
+        let dir = temp_dir("missing-key");
+        let path = dir.join(CONFIG_FILE);
+        fs::write(&path, "model = \"deepseek-v4-pro\"\n").unwrap();
+
+        let error = Config::load_file(&path).unwrap_err().to_string();
+
+        assert!(error.contains("missing DeepSeek api_key"));
+    }
+
+    #[test]
+    fn finds_config_from_child_directory() {
+        let dir = temp_dir("find");
+        let child = dir.join("a").join("b");
+        fs::create_dir_all(&child).unwrap();
+        fs::write(dir.join(CONFIG_FILE), "api_key = \"sk-test\"\n").unwrap();
+
+        let config = Config::load(&child).unwrap();
+
+        assert_eq!(config.api_key, "sk-test");
+    }
+
+    fn temp_dir(name: &str) -> PathBuf {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!("deepcode-{name}-{unique}"));
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+}

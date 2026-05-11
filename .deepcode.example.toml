@@ -1,0 +1,10 @@
+# Copy this file to .deepcode.toml and fill in your API key.
+# .deepcode.toml is ignored by git.
+
+api_key = "sk-your-deepseek-api-key"
+base_url = "https://api.deepseek.com"
+model = "deepseek-v4-pro"
+output_dir = "deepcode-reports"
+format = "both"
+max_file_bytes = 200000
+cache_enabled = true
