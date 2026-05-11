@@ -6,6 +6,9 @@ use std::path::PathBuf;
 #[command(name = "deepcode")]
 #[command(about = "DeepSeek-powered read-only code analysis")]
 pub struct Cli {
+    /// Disable reading and writing cached model responses for this run.
+    #[arg(long, global = true)]
+    pub no_cache: bool,
     #[command(subcommand)]
     pub command: Commands,
 }
