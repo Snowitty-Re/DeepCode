@@ -1,7 +1,9 @@
 pub mod cache;
 pub mod cli;
+pub mod code_structure;
 pub mod config;
 pub mod deepseek;
+pub mod diff;
 pub mod prompts;
 pub mod report;
 pub mod scanner;

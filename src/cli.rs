@@ -49,6 +49,16 @@ pub enum Commands {
     Ideas(PathCommand),
     /// Generate a combined Markdown and JSON report.
     Report(PathCommand),
+    /// Build a structured code understanding map.
+    Understand(PathCommand),
+    /// Generate practical project documentation.
+    Docs(DocsCommand),
+    /// Generate a prioritized refactoring plan.
+    Refactor(PlanCommand),
+    /// Compare two paths and report structural and behavioral differences.
+    Diff(DiffCommand),
+    /// Start an interactive exploration session.
+    Explore(PathCommand),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -59,6 +69,11 @@ pub enum Workflow {
     Plan,
     Ideas,
     Report,
+    Understand,
+    Docs,
+    Refactor,
+    Diff,
+    Explore,
 }
 
 impl Workflow {
@@ -69,6 +84,11 @@ impl Workflow {
             Workflow::Plan => "plan",
             Workflow::Ideas => "ideas",
             Workflow::Report => "report",
+            Workflow::Understand => "understand",
+            Workflow::Docs => "docs",
+            Workflow::Refactor => "refactor",
+            Workflow::Diff => "diff",
+            Workflow::Explore => "explore",
         }
     }
 }
@@ -86,6 +106,44 @@ pub struct PlanCommand {
     /// Development goal to plan for.
     #[arg(long)]
     pub goal: String,
+}
+
+#[derive(Debug, clap::Args)]
+pub struct DocsCommand {
+    /// File or project directory to read.
+    pub path: PathBuf,
+    /// Documentation kind to focus on. Repeat for multiple kinds.
+    #[arg(long = "kind", value_enum)]
+    pub kinds: Vec<DocKind>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum DocKind {
+    Readme,
+    Architecture,
+    Api,
+    Onboarding,
+    Changelog,
+}
+
+impl DocKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            DocKind::Readme => "readme",
+            DocKind::Architecture => "architecture",
+            DocKind::Api => "api",
+            DocKind::Onboarding => "onboarding",
+            DocKind::Changelog => "changelog",
+        }
+    }
+}
+
+#[derive(Debug, clap::Args)]
+pub struct DiffCommand {
+    /// Baseline file or project directory.
+    pub old_path: PathBuf,
+    /// Changed file or project directory.
+    pub new_path: PathBuf,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]

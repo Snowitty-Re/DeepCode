@@ -11,6 +11,25 @@ Return valid JSON only. No Markdown fences, no prose outside JSON."#;
 const SCHEMA_PROMPT: &str = r#"Return this exact JSON shape:
 {
   "summary": "short project or file overview",
+  "structure": {
+    "entrypoints": ["relative entrypoint paths"],
+    "modules": [
+      {
+        "path": "relative/path",
+        "language": "language",
+        "responsibility": "module responsibility",
+        "symbols": ["important symbols"],
+        "imports": ["important imports"]
+      }
+    ],
+    "dependencies": [
+      {
+        "from": "relative/path",
+        "to": "module or dependency",
+        "kind": "import|runtime|data|test"
+      }
+    ]
+  },
   "responsibilities": ["major responsibilities"],
   "core_components": [
     {
@@ -54,6 +73,19 @@ const SCHEMA_PROMPT: &str = r#"Return this exact JSON shape:
       "category": "feature|performance|architecture|tech-debt|creative"
     }
   ],
+  "documents": [
+    {
+      "title": "document title",
+      "kind": "readme|architecture|api|onboarding|changelog",
+      "content": "complete document body in Markdown"
+    }
+  ],
+  "diff": {
+    "added": ["added files or behaviors"],
+    "removed": ["removed files or behaviors"],
+    "modified": ["modified files or behaviors"],
+    "unchanged": ["unchanged files or behaviors"]
+  },
   "risks": ["important risks or unknowns"]
 }"#;
 
@@ -139,6 +171,21 @@ fn workflow_instruction(workflow: Workflow) -> &'static str {
         }
         Workflow::Report => {
             "Task: generate a comprehensive report combining understanding, quality analysis, planning recommendations, ideas, risks, and tests."
+        }
+        Workflow::Understand => {
+            "Task: produce a structured code understanding map: entrypoints, modules, responsibilities, symbols, imports, dependency edges, data/control flow, and important unknowns."
+        }
+        Workflow::Docs => {
+            "Task: generate multiple practical Markdown documents in the documents array: README, architecture guide, API/reference notes when applicable, onboarding guide, and changelog-style summary."
+        }
+        Workflow::Refactor => {
+            "Task: generate a prioritized refactoring and improvement plan with dependencies, risk, verification, rollout order, and concrete tests."
+        }
+        Workflow::Diff => {
+            "Task: compare the two provided snapshots. Fill diff added/removed/modified/unchanged and explain behavior, architecture, risk, and test impact."
+        }
+        Workflow::Explore => {
+            "Task: answer the user's exploration question using the provided code context. Prefer concise, source-grounded answers and include follow-up questions when useful."
         }
     }
 }

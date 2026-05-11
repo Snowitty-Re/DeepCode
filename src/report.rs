@@ -12,6 +12,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 pub struct AnalysisReport {
     pub summary: String,
     #[serde(default)]
+    pub structure: CodeStructure,
+    #[serde(default)]
     pub responsibilities: Vec<String>,
     #[serde(default)]
     pub core_components: Vec<CoreComponent>,
@@ -26,7 +28,39 @@ pub struct AnalysisReport {
     #[serde(default)]
     pub ideas: Vec<Idea>,
     #[serde(default)]
+    pub documents: Vec<GeneratedDocument>,
+    #[serde(default)]
+    pub diff: DiffSummary,
+    #[serde(default)]
     pub risks: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub struct CodeStructure {
+    #[serde(default)]
+    pub entrypoints: Vec<String>,
+    #[serde(default)]
+    pub modules: Vec<StructureModule>,
+    #[serde(default)]
+    pub dependencies: Vec<DependencyEdge>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct StructureModule {
+    pub path: String,
+    pub language: String,
+    pub responsibility: String,
+    #[serde(default)]
+    pub symbols: Vec<String>,
+    #[serde(default)]
+    pub imports: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct DependencyEdge {
+    pub from: String,
+    pub to: String,
+    pub kind: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -88,6 +122,35 @@ pub struct Idea {
     pub category: IdeaCategory,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct GeneratedDocument {
+    pub title: String,
+    pub kind: DocumentKind,
+    pub content: String,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum DocumentKind {
+    Readme,
+    Architecture,
+    Api,
+    Onboarding,
+    Changelog,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub struct DiffSummary {
+    #[serde(default)]
+    pub added: Vec<String>,
+    #[serde(default)]
+    pub removed: Vec<String>,
+    #[serde(default)]
+    pub modified: Vec<String>,
+    #[serde(default)]
+    pub unchanged: Vec<String>,
+}
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum Effort {
@@ -110,6 +173,7 @@ pub enum IdeaCategory {
 pub struct WrittenReport {
     pub markdown_path: Option<PathBuf>,
     pub json_path: Option<PathBuf>,
+    pub document_paths: Vec<PathBuf>,
 }
 
 impl Default for QualityReport {
@@ -203,7 +267,64 @@ pub fn write_report_with_format(
     Ok(WrittenReport {
         markdown_path,
         json_path,
+        document_paths: write_generated_documents(&output_dir, &base_name, report)?,
     })
+}
+
+fn write_generated_documents(
+    output_dir: &std::path::Path,
+    base_name: &str,
+    report: &AnalysisReport,
+) -> Result<Vec<PathBuf>> {
+    if report.documents.is_empty() {
+        return Ok(Vec::new());
+    }
+    let docs_dir = output_dir.join(format!("{base_name}-docs"));
+    fs::create_dir_all(&docs_dir)
+        .with_context(|| format!("failed to create docs directory {}", docs_dir.display()))?;
+    let mut paths = Vec::new();
+    for document in &report.documents {
+        let path = docs_dir.join(format!(
+            "{}-{}.md",
+            document.kind.as_str(),
+            slugify(&document.title)
+        ));
+        fs::write(&path, &document.content)
+            .with_context(|| format!("failed to write generated document {}", path.display()))?;
+        paths.push(path);
+    }
+    Ok(paths)
+}
+
+impl DocumentKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Readme => "readme",
+            Self::Architecture => "architecture",
+            Self::Api => "api",
+            Self::Onboarding => "onboarding",
+            Self::Changelog => "changelog",
+        }
+    }
+}
+
+fn slugify(value: &str) -> String {
+    let mut slug = String::new();
+    for character in value.chars() {
+        if character.is_ascii_alphanumeric() {
+            slug.push(character.to_ascii_lowercase());
+        } else if (character.is_ascii_whitespace() || character == '-' || character == '_')
+            && !slug.ends_with('-')
+        {
+            slug.push('-');
+        }
+    }
+    let slug = slug.trim_matches('-').to_string();
+    if slug.is_empty() {
+        "document".to_string()
+    } else {
+        slug
+    }
 }
 
 pub fn render_markdown(
@@ -217,6 +338,7 @@ pub fn render_markdown(
     markdown.push_str("## Summary\n\n");
     markdown.push_str(&report.summary);
     markdown.push_str("\n\n");
+    append_structure(&mut markdown, &report.structure);
     append_list(&mut markdown, "Responsibilities", &report.responsibilities);
     append_components(&mut markdown, &report.core_components);
     append_quality(&mut markdown, &report.quality);
@@ -224,6 +346,8 @@ pub fn render_markdown(
     append_list(&mut markdown, "Tests", &report.tests);
     append_plan(&mut markdown, &report.plan);
     append_ideas(&mut markdown, &report.ideas);
+    append_documents(&mut markdown, &report.documents);
+    append_diff(&mut markdown, &report.diff);
     append_list(&mut markdown, "Risks", &report.risks);
     markdown.push_str("## Scan\n\n");
     markdown.push_str(&format!(
@@ -244,6 +368,44 @@ pub fn render_markdown(
         }
     }
     markdown
+}
+
+fn append_structure(markdown: &mut String, structure: &CodeStructure) {
+    markdown.push_str("## Structure\n\n");
+    if structure.entrypoints.is_empty()
+        && structure.modules.is_empty()
+        && structure.dependencies.is_empty()
+    {
+        markdown.push_str("- None\n\n");
+        return;
+    }
+    append_list(markdown, "Entrypoints", &structure.entrypoints);
+    markdown.push_str("### Modules\n\n");
+    if structure.modules.is_empty() {
+        markdown.push_str("- None\n\n");
+    } else {
+        for module in &structure.modules {
+            markdown.push_str(&format!(
+                "- `{}` [{}]: {}\n",
+                module.path, module.language, module.responsibility
+            ));
+            append_inline_list(markdown, "Symbols", &module.symbols);
+            append_inline_list(markdown, "Imports", &module.imports);
+        }
+        markdown.push('\n');
+    }
+    markdown.push_str("### Dependencies\n\n");
+    if structure.dependencies.is_empty() {
+        markdown.push_str("- None\n\n");
+    } else {
+        for dependency in &structure.dependencies {
+            markdown.push_str(&format!(
+                "- `{}` -> `{}` ({})\n",
+                dependency.from, dependency.to, dependency.kind
+            ));
+        }
+        markdown.push('\n');
+    }
 }
 
 fn append_list(markdown: &mut String, title: &str, items: &[String]) {
@@ -338,6 +500,38 @@ fn append_ideas(markdown: &mut String, ideas: &[Idea]) {
     markdown.push('\n');
 }
 
+fn append_documents(markdown: &mut String, documents: &[GeneratedDocument]) {
+    markdown.push_str("## Documents\n\n");
+    if documents.is_empty() {
+        markdown.push_str("- None\n\n");
+        return;
+    }
+    for document in documents {
+        markdown.push_str(&format!("### {} [{:?}]\n\n", document.title, document.kind));
+        markdown.push_str(&document.content);
+        if !document.content.ends_with('\n') {
+            markdown.push('\n');
+        }
+        markdown.push('\n');
+    }
+}
+
+fn append_diff(markdown: &mut String, diff: &DiffSummary) {
+    markdown.push_str("## Diff\n\n");
+    if diff.added.is_empty()
+        && diff.removed.is_empty()
+        && diff.modified.is_empty()
+        && diff.unchanged.is_empty()
+    {
+        markdown.push_str("- None\n\n");
+        return;
+    }
+    append_list(markdown, "Added", &diff.added);
+    append_list(markdown, "Removed", &diff.removed);
+    append_list(markdown, "Modified", &diff.modified);
+    markdown.push_str(&format!("- Unchanged files: {}\n\n", diff.unchanged.len()));
+}
+
 fn append_inline_list(markdown: &mut String, label: &str, items: &[String]) {
     if !items.is_empty() {
         markdown.push_str(&format!("  - {label}: {}\n", items.join(", ")));
@@ -428,6 +622,7 @@ mod tests {
         };
         let report = AnalysisReport {
             summary: "Small app".to_string(),
+            structure: CodeStructure::default(),
             responsibilities: vec!["run".to_string()],
             core_components: vec![],
             quality: QualityReport {
@@ -438,6 +633,8 @@ mod tests {
             tests: vec!["cargo test".to_string()],
             plan: vec![],
             ideas: vec![],
+            documents: vec![],
+            diff: DiffSummary::default(),
             risks: vec![],
         };
 
@@ -446,5 +643,48 @@ mod tests {
         assert!(markdown.contains("# DeepCode report Report"));
         assert!(markdown.contains("Small app"));
         assert!(markdown.contains("Files read: 1"));
+    }
+
+    #[test]
+    fn writes_generated_documents_as_separate_markdown_files() {
+        let dir = std::env::temp_dir().join(format!(
+            "deepcode-docs-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let snapshot = ProjectSnapshot {
+            root: PathBuf::from("/tmp/app"),
+            files: vec![],
+            skipped: vec![],
+            summary: crate::scanner::ScanSummary::default(),
+        };
+        let report = AnalysisReport {
+            summary: "Docs".to_string(),
+            structure: CodeStructure::default(),
+            responsibilities: vec![],
+            core_components: vec![],
+            quality: QualityReport::default(),
+            improvements: vec![],
+            tests: vec![],
+            plan: vec![],
+            ideas: vec![],
+            documents: vec![GeneratedDocument {
+                title: "Getting Started".to_string(),
+                kind: DocumentKind::Readme,
+                content: "# Getting Started\n".to_string(),
+            }],
+            diff: DiffSummary::default(),
+            risks: vec![],
+        };
+
+        let written =
+            write_report_with_format(&dir, ReportFormat::Json, Workflow::Docs, &snapshot, &report)
+                .unwrap();
+
+        assert_eq!(written.document_paths.len(), 1);
+        assert!(written.document_paths[0].ends_with("readme-getting-started.md"));
+        assert!(written.document_paths[0].is_file());
     }
 }
