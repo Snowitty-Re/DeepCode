@@ -1,0 +1,45 @@
+{
+  "summary": "Small Rust CLI fixture used to demonstrate DeepCode output.",
+  "responsibilities": [
+    "Print a greeting.",
+    "Keep greeting formatting isolated in a helper function."
+  ],
+  "core_components": [
+    {
+      "path": "src/main.rs",
+      "name": "greeting",
+      "role": "Formats the greeting message.",
+      "inputs": [
+        "name"
+      ],
+      "outputs": [
+        "String"
+      ],
+      "dependencies": []
+    }
+  ],
+  "quality": {
+    "score": 85,
+    "code_smells": [],
+    "complexity_hotspots": [],
+    "consistency": [],
+    "security": [],
+    "maintainability": [
+      "Small and easy to understand."
+    ]
+  },
+  "improvements": [
+    {
+      "title": "Add greeting test",
+      "rationale": "Locks down expected formatting.",
+      "risk": "Low implementation risk.",
+      "priority": "low"
+    }
+  ],
+  "tests": [
+    "Add a unit test for greeting."
+  ],
+  "plan": [],
+  "ideas": [],
+  "risks": []
+}
