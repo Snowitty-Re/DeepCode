@@ -204,10 +204,22 @@ pub fn render_markdown(
     append_list(&mut markdown, "Risks", &report.risks);
     markdown.push_str("## Scan\n\n");
     markdown.push_str(&format!(
-        "- Files read: {}\n- Files skipped: {}\n",
-        snapshot.files.len(),
-        snapshot.skipped.len()
+        "- Files read: {}\n- Files skipped: {}\n- Bytes read: {}\n- Total lines: {}\n- Code lines: {}\n",
+        snapshot.summary.files_read,
+        snapshot.summary.files_skipped,
+        snapshot.summary.bytes_read,
+        snapshot.summary.total_lines,
+        snapshot.summary.total_code_lines
     ));
+    if !snapshot.summary.languages.is_empty() {
+        markdown.push_str("\n### Languages\n\n");
+        for language in &snapshot.summary.languages {
+            markdown.push_str(&format!(
+                "- {}: {} files, {} code lines, {} bytes\n",
+                language.language, language.files, language.code_lines, language.bytes
+            ));
+        }
+    }
     markdown
 }
 
@@ -351,9 +363,29 @@ mod tests {
                 language: "Rust".to_string(),
                 bytes: 12,
                 truncated: false,
+                metrics: crate::scanner::FileMetrics {
+                    lines: 1,
+                    code_lines: 1,
+                    comment_lines: 0,
+                    blank_lines: 0,
+                    longest_line: 12,
+                },
                 content: "fn main() {}".to_string(),
             }],
             skipped: vec![],
+            summary: crate::scanner::ScanSummary {
+                files_read: 1,
+                files_skipped: 0,
+                bytes_read: 12,
+                total_lines: 1,
+                total_code_lines: 1,
+                languages: vec![crate::scanner::LanguageSummary {
+                    language: "Rust".to_string(),
+                    files: 1,
+                    bytes: 12,
+                    code_lines: 1,
+                }],
+            },
         };
         let report = AnalysisReport {
             summary: "Small app".to_string(),

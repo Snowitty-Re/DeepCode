@@ -30,6 +30,8 @@ fn sends_openai_compatible_chat_completion_request() {
         output_dir: PathBuf::from("target/test-reports"),
         format: ReportFormat::Both,
         max_file_bytes: 200_000,
+        max_files: 200,
+        max_total_bytes: 2_000_000,
         cache_enabled: false,
     };
     let client = DeepSeekClient::new(&config).unwrap();

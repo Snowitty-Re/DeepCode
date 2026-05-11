@@ -46,6 +46,8 @@ fn run_workflow(
         &path,
         ScanOptions {
             max_file_bytes: config.max_file_bytes,
+            max_files: config.max_files,
+            max_total_bytes: config.max_total_bytes,
         },
     )?;
     let cache_enabled = config.cache_enabled && !no_cache;

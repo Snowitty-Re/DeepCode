@@ -32,6 +32,7 @@ pub struct ProjectSnapshot {
     pub root: PathBuf,
     pub files: Vec<ScannedFile>,
     pub skipped: Vec<SkippedFile>,
+    pub summary: ScanSummary,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -40,7 +41,17 @@ pub struct ScannedFile {
     pub language: String,
     pub bytes: u64,
     pub truncated: bool,
+    pub metrics: FileMetrics,
     pub content: String,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct FileMetrics {
+    pub lines: usize,
+    pub code_lines: usize,
+    pub comment_lines: usize,
+    pub blank_lines: usize,
+    pub longest_line: usize,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -49,9 +60,29 @@ pub struct SkippedFile {
     pub reason: String,
 }
 
+#[derive(Debug, Clone, Serialize, PartialEq, Eq, Default)]
+pub struct ScanSummary {
+    pub files_read: usize,
+    pub files_skipped: usize,
+    pub bytes_read: u64,
+    pub total_lines: usize,
+    pub total_code_lines: usize,
+    pub languages: Vec<LanguageSummary>,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct LanguageSummary {
+    pub language: String,
+    pub files: usize,
+    pub bytes: u64,
+    pub code_lines: usize,
+}
+
 #[derive(Debug, Clone, Copy)]
 pub struct ScanOptions {
     pub max_file_bytes: u64,
+    pub max_files: usize,
+    pub max_total_bytes: u64,
 }
 
 pub fn scan_path(path: impl AsRef<Path>, options: ScanOptions) -> Result<ProjectSnapshot> {
@@ -68,6 +99,7 @@ pub fn scan_path(path: impl AsRef<Path>, options: ScanOptions) -> Result<Project
         root: root.clone(),
         files: Vec::new(),
         skipped: Vec::new(),
+        summary: ScanSummary::default(),
     };
 
     for entry in WalkDir::new(&root)
@@ -101,8 +133,37 @@ pub fn scan_path(path: impl AsRef<Path>, options: ScanOptions) -> Result<Project
             continue;
         }
 
+        if snapshot.files.len() >= options.max_files {
+            snapshot.skipped.push(SkippedFile {
+                path: relative_path(&root, file_path),
+                reason: format!("scan file limit reached ({})", options.max_files),
+            });
+            continue;
+        }
+
+        let bytes = match fs::metadata(file_path) {
+            Ok(metadata) => metadata.len(),
+            Err(error) => {
+                snapshot.skipped.push(SkippedFile {
+                    path: relative_path(&root, file_path),
+                    reason: format!("failed to read metadata: {error}"),
+                });
+                continue;
+            }
+        };
+        if snapshot.summary.bytes_read.saturating_add(bytes) > options.max_total_bytes {
+            snapshot.skipped.push(SkippedFile {
+                path: relative_path(&root, file_path),
+                reason: format!("scan byte budget exceeded ({})", options.max_total_bytes),
+            });
+            continue;
+        }
+
         match scan_file(&root, file_path, options) {
-            Ok(file) => snapshot.files.push(file),
+            Ok(file) => {
+                snapshot.summary.bytes_read += file.bytes;
+                snapshot.files.push(file);
+            }
             Err(error) => snapshot.skipped.push(SkippedFile {
                 path: relative_path(&root, file_path),
                 reason: error.to_string(),
@@ -116,6 +177,7 @@ pub fn scan_path(path: impl AsRef<Path>, options: ScanOptions) -> Result<Project
     snapshot
         .skipped
         .sort_by(|left, right| left.path.cmp(&right.path));
+    snapshot.summary = summarize(&snapshot.files, &snapshot.skipped);
     Ok(snapshot)
 }
 
@@ -128,6 +190,7 @@ fn scan_file_root(path: PathBuf, options: ScanOptions) -> Result<ProjectSnapshot
         root: root.clone(),
         files: Vec::new(),
         skipped: Vec::new(),
+        summary: ScanSummary::default(),
     };
 
     if is_ignored_file(&path) {
@@ -135,6 +198,7 @@ fn scan_file_root(path: PathBuf, options: ScanOptions) -> Result<ProjectSnapshot
             path: relative_path(&root, &path),
             reason: "ignored lock or generated file".to_string(),
         });
+        snapshot.summary = summarize(&snapshot.files, &snapshot.skipped);
         return Ok(snapshot);
     }
 
@@ -146,6 +210,7 @@ fn scan_file_root(path: PathBuf, options: ScanOptions) -> Result<ProjectSnapshot
         }),
     }
 
+    snapshot.summary = summarize(&snapshot.files, &snapshot.skipped);
     Ok(snapshot)
 }
 
@@ -161,14 +226,88 @@ fn scan_file(root: &Path, path: &Path, options: ScanOptions) -> Result<ScannedFi
         content.truncate(options.max_file_bytes as usize);
         content.push_str("\n\n[deepcode: file content truncated]\n");
     }
+    let metrics = measure_content(&content);
 
     Ok(ScannedFile {
         path: relative_path(root, path),
         language: language_for_path(path).to_string(),
         bytes,
         truncated,
+        metrics,
         content,
     })
+}
+
+fn summarize(files: &[ScannedFile], skipped: &[SkippedFile]) -> ScanSummary {
+    let mut languages: Vec<LanguageSummary> = Vec::new();
+    for file in files {
+        let entry = match languages
+            .iter_mut()
+            .find(|summary| summary.language == file.language)
+        {
+            Some(entry) => entry,
+            None => {
+                languages.push(LanguageSummary {
+                    language: file.language.clone(),
+                    files: 0,
+                    bytes: 0,
+                    code_lines: 0,
+                });
+                languages.last_mut().expect("language summary exists")
+            }
+        };
+        entry.files += 1;
+        entry.bytes += file.bytes;
+        entry.code_lines += file.metrics.code_lines;
+    }
+    languages.sort_by(|left, right| {
+        right
+            .code_lines
+            .cmp(&left.code_lines)
+            .then_with(|| left.language.cmp(&right.language))
+    });
+
+    ScanSummary {
+        files_read: files.len(),
+        files_skipped: skipped.len(),
+        bytes_read: files.iter().map(|file| file.bytes).sum(),
+        total_lines: files.iter().map(|file| file.metrics.lines).sum(),
+        total_code_lines: files.iter().map(|file| file.metrics.code_lines).sum(),
+        languages,
+    }
+}
+
+fn measure_content(content: &str) -> FileMetrics {
+    let mut metrics = FileMetrics {
+        lines: 0,
+        code_lines: 0,
+        comment_lines: 0,
+        blank_lines: 0,
+        longest_line: 0,
+    };
+    for line in content.lines() {
+        metrics.lines += 1;
+        metrics.longest_line = metrics.longest_line.max(line.len());
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            metrics.blank_lines += 1;
+        } else if is_comment_line(trimmed) {
+            metrics.comment_lines += 1;
+        } else {
+            metrics.code_lines += 1;
+        }
+    }
+    metrics
+}
+
+fn is_comment_line(trimmed: &str) -> bool {
+    trimmed.starts_with("//")
+        || trimmed.starts_with('#')
+        || trimmed.starts_with("--")
+        || trimmed.starts_with("/*")
+        || trimmed.starts_with('*')
+        || trimmed.starts_with("*/")
+        || trimmed.starts_with("<!--")
 }
 
 fn is_ignored_dir(entry: &DirEntry) -> bool {
@@ -238,6 +377,8 @@ mod tests {
             &dir,
             ScanOptions {
                 max_file_bytes: 100,
+                max_files: 100,
+                max_total_bytes: 1_000,
             },
         )
         .unwrap();
@@ -245,6 +386,9 @@ mod tests {
         assert_eq!(snapshot.files.len(), 1);
         assert_eq!(snapshot.files[0].path, PathBuf::from("src/main.rs"));
         assert_eq!(snapshot.files[0].language, "Rust");
+        assert_eq!(snapshot.files[0].metrics.code_lines, 1);
+        assert_eq!(snapshot.summary.files_read, 1);
+        assert_eq!(snapshot.summary.languages[0].language, "Rust");
         assert_eq!(snapshot.skipped.len(), 1);
         assert_eq!(snapshot.skipped[0].path, PathBuf::from("Cargo.lock"));
     }
@@ -255,7 +399,15 @@ mod tests {
         let file = dir.join("big.txt");
         fs::write(&file, "abcdef").unwrap();
 
-        let snapshot = scan_path(&file, ScanOptions { max_file_bytes: 3 }).unwrap();
+        let snapshot = scan_path(
+            &file,
+            ScanOptions {
+                max_file_bytes: 3,
+                max_files: 100,
+                max_total_bytes: 1_000,
+            },
+        )
+        .unwrap();
 
         assert_eq!(snapshot.files.len(), 1);
         assert!(snapshot.files[0].truncated);
@@ -272,12 +424,56 @@ mod tests {
             &dir,
             ScanOptions {
                 max_file_bytes: 100,
+                max_files: 100,
+                max_total_bytes: 1_000,
             },
         )
         .unwrap();
 
         assert!(snapshot.files.is_empty());
         assert_eq!(snapshot.skipped.len(), 1);
+    }
+
+    #[test]
+    fn enforces_file_budget() {
+        let dir = temp_dir("file-budget");
+        fs::write(dir.join("a.rs"), "fn a() {}\n").unwrap();
+        fs::write(dir.join("b.rs"), "fn b() {}\n").unwrap();
+
+        let snapshot = scan_path(
+            &dir,
+            ScanOptions {
+                max_file_bytes: 100,
+                max_files: 1,
+                max_total_bytes: 1_000,
+            },
+        )
+        .unwrap();
+
+        assert_eq!(snapshot.files.len(), 1);
+        assert_eq!(snapshot.skipped.len(), 1);
+        assert!(snapshot.skipped[0].reason.contains("scan file limit"));
+    }
+
+    #[test]
+    fn enforces_total_byte_budget() {
+        let dir = temp_dir("byte-budget");
+        fs::write(dir.join("a.rs"), "fn a() {}\n").unwrap();
+        fs::write(dir.join("b.rs"), "fn b() {}\n").unwrap();
+
+        let snapshot = scan_path(
+            &dir,
+            ScanOptions {
+                max_file_bytes: 100,
+                max_files: 100,
+                max_total_bytes: 10,
+            },
+        )
+        .unwrap();
+
+        assert_eq!(snapshot.files.len(), 1);
+        assert_eq!(snapshot.skipped.len(), 1);
+        assert!(snapshot.skipped[0].reason.contains("scan byte budget"));
     }
 
     fn temp_dir(name: &str) -> PathBuf {

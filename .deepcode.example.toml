@@ -7,4 +7,6 @@ model = "deepseek-v4-pro"
 output_dir = "deepcode-reports"
 format = "both"
 max_file_bytes = 200000
+max_files = 200
+max_total_bytes = 2000000
 cache_enabled = true

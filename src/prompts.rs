@@ -85,6 +85,25 @@ fn build_user_prompt(
     prompt.push('\n');
     prompt.push_str("Focus on concrete observations grounded in the provided files.\n");
     prompt.push_str("If a section is not relevant for this workflow, return an empty array or neutral score, but keep the schema intact.\n\n");
+    prompt.push_str("Local scan summary:\n");
+    prompt.push_str(&format!(
+        "- files_read: {}\n- files_skipped: {}\n- bytes_read: {}\n- total_lines: {}\n- total_code_lines: {}\n",
+        snapshot.summary.files_read,
+        snapshot.summary.files_skipped,
+        snapshot.summary.bytes_read,
+        snapshot.summary.total_lines,
+        snapshot.summary.total_code_lines
+    ));
+    if !snapshot.summary.languages.is_empty() {
+        prompt.push_str("- languages:\n");
+        for language in &snapshot.summary.languages {
+            prompt.push_str(&format!(
+                "  - {}: {} files, {} code lines, {} bytes\n",
+                language.language, language.files, language.code_lines, language.bytes
+            ));
+        }
+    }
+    prompt.push('\n');
     prompt.push_str("Scanned files:\n");
     for file in &snapshot.files {
         append_file(&mut prompt, file);
@@ -132,6 +151,14 @@ fn append_file(prompt: &mut String, file: &ScannedFile) {
         file.bytes,
         file.truncated
     ));
+    prompt.push_str(&format!(
+        "[metrics: lines={}, code_lines={}, comment_lines={}, blank_lines={}, longest_line={}]\n",
+        file.metrics.lines,
+        file.metrics.code_lines,
+        file.metrics.comment_lines,
+        file.metrics.blank_lines,
+        file.metrics.longest_line
+    ));
     prompt.push_str(&file.content);
     if !file.content.ends_with('\n') {
         prompt.push('\n');
@@ -153,9 +180,29 @@ mod tests {
                 language: "Rust".to_string(),
                 bytes: 12,
                 truncated: false,
+                metrics: crate::scanner::FileMetrics {
+                    lines: 1,
+                    code_lines: 1,
+                    comment_lines: 0,
+                    blank_lines: 0,
+                    longest_line: 12,
+                },
                 content: "fn main() {}".to_string(),
             }],
             skipped: vec![],
+            summary: crate::scanner::ScanSummary {
+                files_read: 1,
+                files_skipped: 0,
+                bytes_read: 12,
+                total_lines: 1,
+                total_code_lines: 1,
+                languages: vec![crate::scanner::LanguageSummary {
+                    language: "Rust".to_string(),
+                    files: 1,
+                    bytes: 12,
+                    code_lines: 1,
+                }],
+            },
         };
 
         let messages = build_messages(Workflow::Plan, &snapshot, Some("add auth")).unwrap();
@@ -164,6 +211,7 @@ mod tests {
         assert!(messages[0].content.contains("Return valid JSON only"));
         assert!(messages[0].content.contains("\"quality\""));
         assert!(messages[1].content.contains("Workflow: plan"));
+        assert!(messages[1].content.contains("Local scan summary"));
         assert!(messages[1].content.contains("Goal: add auth"));
         assert!(messages[1].content.contains("--- FILE: src/main.rs"));
     }

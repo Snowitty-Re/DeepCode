@@ -105,9 +105,29 @@ mod tests {
                 language: "Rust".to_string(),
                 bytes: content.len() as u64,
                 truncated: false,
+                metrics: crate::scanner::FileMetrics {
+                    lines: 1,
+                    code_lines: 1,
+                    comment_lines: 0,
+                    blank_lines: 0,
+                    longest_line: content.len(),
+                },
                 content: content.to_string(),
             }],
             skipped: vec![],
+            summary: crate::scanner::ScanSummary {
+                files_read: 1,
+                files_skipped: 0,
+                bytes_read: content.len() as u64,
+                total_lines: 1,
+                total_code_lines: 1,
+                languages: vec![crate::scanner::LanguageSummary {
+                    language: "Rust".to_string(),
+                    files: 1,
+                    bytes: content.len() as u64,
+                    code_lines: 1,
+                }],
+            },
         }
     }
 
@@ -123,6 +143,8 @@ mod tests {
             output_dir: std::env::temp_dir().join(format!("deepcode-cache-{unique}")),
             format: ReportFormat::Both,
             max_file_bytes: 200_000,
+            max_files: 200,
+            max_total_bytes: 2_000_000,
             cache_enabled: true,
         }
     }
