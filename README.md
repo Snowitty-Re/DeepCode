@@ -8,8 +8,13 @@ It targets the DeepSeek OpenAI-compatible chat completions API and the `deepseek
 
 ```bash
 deepcode summarize <path>
+deepcode understand <path>
 deepcode analyze <path>
 deepcode plan <path> --goal "add audit logging"
+deepcode refactor <path> --goal "reduce coupling in the API layer"
+deepcode docs <path> --kind readme --kind architecture
+deepcode diff <old-path> <new-path>
+deepcode explore <path>
 deepcode ideas <path>
 deepcode report <path>
 ```
@@ -48,6 +53,8 @@ DeepCode intentionally does not read the API key from environment variables.
 
 Reports are written to `output_dir` as Markdown, JSON, or both, depending on `format`.
 
+`deepcode docs` also writes each generated document from the model response into a separate Markdown file under a `*-docs/` directory.
+
 Model responses are cached under `output_dir/.cache` by workflow, goal, model, base URL, and scanned file contents. Use `--no-cache` to force a fresh API request:
 
 ```bash
@@ -67,3 +74,11 @@ The scanner also records local evidence before the model call:
 - per-file line, blank, comment, and longest-line metrics
 
 `max_files` and `max_total_bytes` cap the amount of project content sent to the model for cost and latency control.
+
+## Capability Map
+
+- P0 structured code understanding: `understand` builds entrypoints, modules, symbols, imports, and dependency edges. Reports include a local structure map even when the model omits one.
+- P0 automatic documentation: `docs` can generate README, architecture, API, onboarding, and changelog-style Markdown documents.
+- P1 refactoring planning: `refactor --goal ...` focuses the plan and improvements sections on sequencing, risk, rollout, and tests.
+- P1 diff analysis: `diff <old> <new>` compares two scanned snapshots and includes local added, removed, modified, and unchanged file evidence.
+- P2 interactive exploration: `explore <path>` starts a simple REPL for repeated source-grounded questions over the same scanned context.
