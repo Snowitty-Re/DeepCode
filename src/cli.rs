@@ -1,4 +1,5 @@
 use clap::{Parser, Subcommand, ValueEnum};
+use serde::Serialize;
 use std::path::PathBuf;
 
 #[derive(Debug, Parser)]
@@ -21,6 +22,28 @@ pub enum Commands {
     Ideas(PathCommand),
     /// Generate a combined Markdown and JSON report.
     Report(PathCommand),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum Workflow {
+    Summarize,
+    Analyze,
+    Plan,
+    Ideas,
+    Report,
+}
+
+impl Workflow {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Workflow::Summarize => "summarize",
+            Workflow::Analyze => "analyze",
+            Workflow::Plan => "plan",
+            Workflow::Ideas => "ideas",
+            Workflow::Report => "report",
+        }
+    }
 }
 
 #[derive(Debug, clap::Args)]

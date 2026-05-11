@@ -1,0 +1,170 @@
+use crate::cli::Workflow;
+use crate::deepseek::ChatMessage;
+use crate::scanner::{ProjectSnapshot, ScannedFile};
+use anyhow::{Context, Result};
+
+const SYSTEM_PROMPT: &str = r#"You are DeepCode, a senior software engineering analysis agent.
+You only analyze code that is provided in the prompt.
+You do not claim to run, modify, or commit target project code.
+Return valid JSON only. No Markdown fences, no prose outside JSON."#;
+
+const SCHEMA_PROMPT: &str = r#"Return this exact JSON shape:
+{
+  "summary": "short project or file overview",
+  "responsibilities": ["major responsibilities"],
+  "core_components": [
+    {
+      "path": "relative/path",
+      "name": "function/class/module/component",
+      "role": "what it does",
+      "inputs": ["inputs"],
+      "outputs": ["outputs"],
+      "dependencies": ["important dependencies"]
+    }
+  ],
+  "quality": {
+    "score": 0,
+    "code_smells": ["specific smells"],
+    "complexity_hotspots": ["specific hotspots"],
+    "consistency": ["style/API/data consistency observations"],
+    "security": ["security observations"],
+    "maintainability": ["maintainability observations"]
+  },
+  "improvements": [
+    {
+      "title": "specific improvement",
+      "rationale": "why it matters",
+      "risk": "risk or tradeoff",
+      "priority": "low|medium|high"
+    }
+  ],
+  "tests": ["test suggestions"],
+  "plan": [
+    {
+      "step": "implementation step",
+      "reason": "why this step comes here",
+      "verification": "how to verify"
+    }
+  ],
+  "ideas": [
+    {
+      "title": "feature, performance, architecture, tech debt, or unconventional idea",
+      "impact": "expected impact",
+      "effort": "low|medium|high",
+      "category": "feature|performance|architecture|tech-debt|creative"
+    }
+  ],
+  "risks": ["important risks or unknowns"]
+}"#;
+
+pub fn build_messages(
+    workflow: Workflow,
+    snapshot: &ProjectSnapshot,
+    goal: Option<&str>,
+) -> Result<Vec<ChatMessage>> {
+    let user_prompt = build_user_prompt(workflow, snapshot, goal)?;
+    Ok(vec![
+        ChatMessage::system(format!("{SYSTEM_PROMPT}\n\n{SCHEMA_PROMPT}")),
+        ChatMessage::user(user_prompt),
+    ])
+}
+
+fn build_user_prompt(
+    workflow: Workflow,
+    snapshot: &ProjectSnapshot,
+    goal: Option<&str>,
+) -> Result<String> {
+    let mut prompt = String::new();
+    prompt.push_str(&format!("Workflow: {}\n", workflow.as_str()));
+    prompt.push_str(&format!("Project root: {}\n", snapshot.root.display()));
+    if let Some(goal) = goal {
+        prompt.push_str(&format!("Goal: {goal}\n"));
+    }
+    prompt.push('\n');
+    prompt.push_str(workflow_instruction(workflow));
+    prompt.push('\n');
+    prompt.push_str("Focus on concrete observations grounded in the provided files.\n");
+    prompt.push_str("If a section is not relevant for this workflow, return an empty array or neutral score, but keep the schema intact.\n\n");
+    prompt.push_str("Scanned files:\n");
+    for file in &snapshot.files {
+        append_file(&mut prompt, file);
+    }
+    if !snapshot.skipped.is_empty() {
+        prompt.push_str("\nSkipped files:\n");
+        for skipped in &snapshot.skipped {
+            prompt.push_str(&format!(
+                "- {}: {}\n",
+                skipped.path.display(),
+                skipped.reason
+            ));
+        }
+    }
+
+    serde_json::to_string(&snapshot.files).context("failed to serialize scanned files")?;
+    Ok(prompt)
+}
+
+fn workflow_instruction(workflow: Workflow) -> &'static str {
+    match workflow {
+        Workflow::Summarize => {
+            "Task: explain file responsibilities, core functions/classes/modules, inputs, outputs, dependencies, potential problems, and improvement suggestions."
+        }
+        Workflow::Analyze => {
+            "Task: produce a quality report covering code smells, complexity hotspots, consistency, security, maintainability score, refactoring suggestions, and test suggestions."
+        }
+        Workflow::Plan => {
+            "Task: generate a development plan based on the current project state and the provided goal. Include verification steps."
+        }
+        Workflow::Ideas => {
+            "Task: suggest new features, performance optimizations, architecture evolution, technical debt fixes, and unconventional ideas."
+        }
+        Workflow::Report => {
+            "Task: generate a comprehensive report combining understanding, quality analysis, planning recommendations, ideas, risks, and tests."
+        }
+    }
+}
+
+fn append_file(prompt: &mut String, file: &ScannedFile) {
+    prompt.push_str(&format!(
+        "\n--- FILE: {} | language: {} | bytes: {} | truncated: {} ---\n",
+        file.path.display(),
+        file.language,
+        file.bytes,
+        file.truncated
+    ));
+    prompt.push_str(&file.content);
+    if !file.content.ends_with('\n') {
+        prompt.push('\n');
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::scanner::{ProjectSnapshot, ScannedFile};
+    use std::path::PathBuf;
+
+    #[test]
+    fn builds_plan_prompt_with_goal_and_schema() {
+        let snapshot = ProjectSnapshot {
+            root: PathBuf::from("/tmp/app"),
+            files: vec![ScannedFile {
+                path: PathBuf::from("src/main.rs"),
+                language: "Rust".to_string(),
+                bytes: 12,
+                truncated: false,
+                content: "fn main() {}".to_string(),
+            }],
+            skipped: vec![],
+        };
+
+        let messages = build_messages(Workflow::Plan, &snapshot, Some("add auth")).unwrap();
+
+        assert_eq!(messages.len(), 2);
+        assert!(messages[0].content.contains("Return valid JSON only"));
+        assert!(messages[0].content.contains("\"quality\""));
+        assert!(messages[1].content.contains("Workflow: plan"));
+        assert!(messages[1].content.contains("Goal: add auth"));
+        assert!(messages[1].content.contains("--- FILE: src/main.rs"));
+    }
+}
