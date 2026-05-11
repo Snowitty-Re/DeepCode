@@ -24,6 +24,16 @@ pub enum ReportFormat {
     Both,
 }
 
+impl ReportFormat {
+    pub fn writes_markdown(self) -> bool {
+        matches!(self, Self::Markdown | Self::Both)
+    }
+
+    pub fn writes_json(self) -> bool {
+        matches!(self, Self::Json | Self::Both)
+    }
+}
+
 #[derive(Debug, Deserialize)]
 struct RawConfig {
     api_key: Option<String>,
