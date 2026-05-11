@@ -23,3 +23,10 @@ Score: `85/100`
 
 - Files read: 1
 - Files skipped: 0
+- Bytes read: 105
+- Total lines: 7
+- Code lines: 5
+
+### Languages
+
+- Rust: 1 files, 5 code lines, 105 bytes
