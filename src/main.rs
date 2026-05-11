@@ -10,7 +10,7 @@ use deepcode::scanner::{scan_path, ProjectSnapshot, ScanOptions};
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
-    let config = Config::load(std::env::current_dir()?)?;
+    let config = load_config(&cli)?;
 
     match cli.command {
         Commands::Summarize(cmd) => {
@@ -33,6 +33,36 @@ fn main() -> Result<()> {
             run_workflow(Workflow::Report, cmd.path, None, &config, cli.no_cache)
         }
     }
+}
+
+fn load_config(cli: &Cli) -> Result<Config> {
+    let mut config = match &cli.config {
+        Some(path) => Config::load_file(path)?,
+        None => Config::load(std::env::current_dir()?)?,
+    };
+    if let Some(base_url) = &cli.base_url {
+        config.base_url = base_url.clone();
+    }
+    if let Some(model) = &cli.model {
+        config.model = model.clone();
+    }
+    if let Some(output_dir) = &cli.output_dir {
+        config.output_dir = output_dir.clone();
+    }
+    if let Some(format) = cli.format {
+        config.format = format.into();
+    }
+    if let Some(max_file_bytes) = cli.max_file_bytes {
+        config.max_file_bytes = max_file_bytes;
+    }
+    if let Some(max_files) = cli.max_files {
+        config.max_files = max_files;
+    }
+    if let Some(max_total_bytes) = cli.max_total_bytes {
+        config.max_total_bytes = max_total_bytes;
+    }
+    config.validate_public()?;
+    Ok(config)
 }
 
 fn run_workflow(

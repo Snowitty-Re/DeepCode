@@ -126,8 +126,31 @@ impl Default for QualityReport {
 }
 
 pub fn parse_report(content: &str) -> Result<AnalysisReport> {
-    let value: Value = serde_json::from_str(content).context("model did not return valid JSON")?;
+    let cleaned = extract_json_object(content).context("model did not return a JSON object")?;
+    let value: Value = serde_json::from_str(cleaned).context("model did not return valid JSON")?;
     serde_json::from_value(value).context("model JSON did not match DeepCode report schema")
+}
+
+fn extract_json_object(content: &str) -> Option<&str> {
+    let trimmed = content.trim();
+    if trimmed.starts_with('{') && trimmed.ends_with('}') {
+        return Some(trimmed);
+    }
+
+    let without_fence = trimmed
+        .strip_prefix("```json")
+        .or_else(|| trimmed.strip_prefix("```"))
+        .and_then(|value| value.strip_suffix("```"))
+        .map(str::trim);
+    if let Some(value) = without_fence {
+        if value.starts_with('{') && value.ends_with('}') {
+            return Some(value);
+        }
+    }
+
+    let start = trimmed.find('{')?;
+    let end = trimmed.rfind('}')?;
+    (start < end).then_some(&trimmed[start..=end])
 }
 
 pub fn write_report(
@@ -352,6 +375,22 @@ mod tests {
 
         assert_eq!(report.summary, "Small app");
         assert_eq!(report.quality.score, 80);
+    }
+
+    #[test]
+    fn parses_report_wrapped_in_markdown_fence() {
+        let report = parse_report(
+            r#"```json
+            {
+              "summary": "Wrapped",
+              "quality": {"score": 70}
+            }
+            ```"#,
+        )
+        .unwrap();
+
+        assert_eq!(report.summary, "Wrapped");
+        assert_eq!(report.quality.score, 70);
     }
 
     #[test]

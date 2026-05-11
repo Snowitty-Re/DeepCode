@@ -6,6 +6,30 @@ use std::path::PathBuf;
 #[command(name = "deepcode")]
 #[command(about = "DeepSeek-powered read-only code analysis")]
 pub struct Cli {
+    /// Config file path. Defaults to searching for .deepcode.toml from the current directory upward.
+    #[arg(long, global = true)]
+    pub config: Option<PathBuf>,
+    /// Override the configured DeepSeek-compatible base URL.
+    #[arg(long, global = true)]
+    pub base_url: Option<String>,
+    /// Override the configured model.
+    #[arg(long, global = true)]
+    pub model: Option<String>,
+    /// Override the configured output directory.
+    #[arg(long, global = true)]
+    pub output_dir: Option<PathBuf>,
+    /// Override the configured output format.
+    #[arg(long, global = true, value_enum)]
+    pub format: Option<OutputFormat>,
+    /// Override the per-file byte limit sent to the model.
+    #[arg(long, global = true)]
+    pub max_file_bytes: Option<u64>,
+    /// Override the maximum number of files sent to the model.
+    #[arg(long, global = true)]
+    pub max_files: Option<usize>,
+    /// Override the total byte budget sent to the model.
+    #[arg(long, global = true)]
+    pub max_total_bytes: Option<u64>,
     /// Disable reading and writing cached model responses for this run.
     #[arg(long, global = true)]
     pub no_cache: bool,

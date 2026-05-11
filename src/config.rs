@@ -1,3 +1,4 @@
+use crate::cli::OutputFormat;
 use anyhow::{bail, Context, Result};
 use serde::Deserialize;
 use std::fs;
@@ -33,6 +34,16 @@ impl ReportFormat {
 
     pub fn writes_json(self) -> bool {
         matches!(self, Self::Json | Self::Both)
+    }
+}
+
+impl From<OutputFormat> for ReportFormat {
+    fn from(value: OutputFormat) -> Self {
+        match value {
+            OutputFormat::Markdown => Self::Markdown,
+            OutputFormat::Json => Self::Json,
+            OutputFormat::Both => Self::Both,
+        }
     }
 }
 
@@ -73,6 +84,10 @@ impl Config {
             )
         })?;
         Self::load_file(config_path)
+    }
+
+    pub fn validate_public(&self) -> Result<()> {
+        self.validate()
     }
 
     pub fn load_file(path: impl AsRef<Path>) -> Result<Self> {
