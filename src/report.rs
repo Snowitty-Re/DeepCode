@@ -76,7 +76,7 @@ pub struct CoreComponent {
     pub dependencies: Vec<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 pub struct QualityReport {
     pub score: u8,
     #[serde(default)]
@@ -174,19 +174,6 @@ pub struct WrittenReport {
     pub markdown_path: Option<PathBuf>,
     pub json_path: Option<PathBuf>,
     pub document_paths: Vec<PathBuf>,
-}
-
-impl Default for QualityReport {
-    fn default() -> Self {
-        Self {
-            score: 0,
-            code_smells: Vec::new(),
-            complexity_hotspots: Vec::new(),
-            consistency: Vec::new(),
-            security: Vec::new(),
-            maintainability: Vec::new(),
-        }
-    }
 }
 
 pub fn parse_report(content: &str) -> Result<AnalysisReport> {

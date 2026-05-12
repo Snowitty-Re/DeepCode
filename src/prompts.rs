@@ -1,7 +1,6 @@
 use crate::cli::Workflow;
 use crate::deepseek::ChatMessage;
 use crate::scanner::{ProjectSnapshot, ScannedFile};
-use anyhow::{Context, Result};
 
 const SYSTEM_PROMPT: &str = r#"You are DeepCode, a senior software engineering analysis agent.
 You only analyze code that is provided in the prompt.
@@ -93,19 +92,15 @@ pub fn build_messages(
     workflow: Workflow,
     snapshot: &ProjectSnapshot,
     goal: Option<&str>,
-) -> Result<Vec<ChatMessage>> {
-    let user_prompt = build_user_prompt(workflow, snapshot, goal)?;
-    Ok(vec![
+) -> Vec<ChatMessage> {
+    let user_prompt = build_user_prompt(workflow, snapshot, goal);
+    vec![
         ChatMessage::system(format!("{SYSTEM_PROMPT}\n\n{SCHEMA_PROMPT}")),
         ChatMessage::user(user_prompt),
-    ])
+    ]
 }
 
-fn build_user_prompt(
-    workflow: Workflow,
-    snapshot: &ProjectSnapshot,
-    goal: Option<&str>,
-) -> Result<String> {
+fn build_user_prompt(workflow: Workflow, snapshot: &ProjectSnapshot, goal: Option<&str>) -> String {
     let mut prompt = String::new();
     prompt.push_str(&format!("Workflow: {}\n", workflow.as_str()));
     prompt.push_str(&format!("Project root: {}\n", snapshot.root.display()));
@@ -151,8 +146,7 @@ fn build_user_prompt(
         }
     }
 
-    serde_json::to_string(&snapshot.files).context("failed to serialize scanned files")?;
-    Ok(prompt)
+    prompt
 }
 
 fn workflow_instruction(workflow: Workflow) -> &'static str {
@@ -255,7 +249,7 @@ mod tests {
             },
         };
 
-        let messages = build_messages(Workflow::Plan, &snapshot, Some("add auth")).unwrap();
+        let messages = build_messages(Workflow::Plan, &snapshot, Some("add auth"));
 
         assert_eq!(messages.len(), 2);
         assert!(messages[0].content.contains("Return valid JSON only"));

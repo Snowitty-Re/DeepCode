@@ -2,12 +2,12 @@ use anyhow::Result;
 use clap::Parser;
 use deepcode::cache::{cache_key, read_cached, write_cached};
 use deepcode::cli::{Cli, Commands, Workflow};
-use deepcode::code_structure::infer_structure;
+use deepcode::code_structure::fill_missing_structure;
 use deepcode::config::Config;
 use deepcode::deepseek::DeepSeekClient;
 use deepcode::diff::summarize_diff;
 use deepcode::prompts::build_messages;
-use deepcode::report::{parse_report, write_report, WrittenReport};
+use deepcode::report::{parse_report, write_report, AnalysisReport, WrittenReport};
 use deepcode::scanner::{scan_path, ProjectSnapshot, ScanOptions};
 
 fn main() -> Result<()> {
@@ -133,34 +133,7 @@ fn run_workflow(
         snapshot.summary.bytes_read,
         snapshot.summary.total_code_lines
     ));
-    let cache_enabled = config.cache_enabled && !no_cache;
-    progress(if cache_enabled {
-        "Checking DeepSeek response cache"
-    } else {
-        "Cache disabled for this run"
-    });
-    let key = cache_key(workflow, goal.as_deref(), config, &snapshot)?;
-    let raw = if cache_enabled {
-        match read_cached(config, &key)? {
-            Some(content) => {
-                progress("Using cached DeepSeek response");
-                content
-            }
-            None => {
-                progress("No cache entry found; requesting DeepSeek");
-                let content = request_model(workflow, goal.as_deref(), config, &snapshot)?;
-                progress("Writing DeepSeek response to cache");
-                write_cached(config, &key, &content)?;
-                content
-            }
-        }
-    } else {
-        request_model(workflow, goal.as_deref(), config, &snapshot)?
-    };
-    progress("Parsing DeepSeek JSON response");
-    let mut report = parse_report(&raw)?;
-    progress("Merging local structure evidence");
-    merge_local_structure(&mut report, &snapshot);
+    let report = ask_for_report(workflow, goal.as_deref(), config, no_cache, &snapshot)?;
     progress(&format!(
         "Writing report output to {}",
         config.output_dir.display()
@@ -202,34 +175,7 @@ fn run_diff(
         old_path.display(),
         new_path.display()
     );
-    let cache_enabled = config.cache_enabled && !no_cache;
-    progress(if cache_enabled {
-        "Checking DeepSeek response cache"
-    } else {
-        "Cache disabled for this run"
-    });
-    let key = cache_key(Workflow::Diff, Some(&goal), config, &combined)?;
-    let raw = if cache_enabled {
-        match read_cached(config, &key)? {
-            Some(content) => {
-                progress("Using cached DeepSeek response");
-                content
-            }
-            None => {
-                progress("No cache entry found; requesting DeepSeek");
-                let content = request_model(Workflow::Diff, Some(&goal), config, &combined)?;
-                progress("Writing DeepSeek response to cache");
-                write_cached(config, &key, &content)?;
-                content
-            }
-        }
-    } else {
-        request_model(Workflow::Diff, Some(&goal), config, &combined)?
-    };
-    progress("Parsing DeepSeek JSON response");
-    let mut report = parse_report(&raw)?;
-    progress("Merging local structure evidence");
-    merge_local_structure(&mut report, &combined);
+    let mut report = ask_for_report(Workflow::Diff, Some(&goal), config, no_cache, &combined)?;
     if report.diff.added.is_empty()
         && report.diff.removed.is_empty()
         && report.diff.modified.is_empty()
@@ -266,28 +212,13 @@ fn run_explore(path: std::path::PathBuf, config: &Config, no_cache: bool) -> Res
         if matches!(question, ":quit" | ":exit") {
             break;
         }
-        let cache_enabled = config.cache_enabled && !no_cache;
-        let key = cache_key(Workflow::Explore, Some(question), config, &snapshot)?;
-        let raw = if cache_enabled {
-            match read_cached(config, &key)? {
-                Some(content) => {
-                    progress("Using cached DeepSeek response");
-                    content
-                }
-                None => {
-                    progress("No cache entry found; requesting DeepSeek");
-                    let content =
-                        request_model(Workflow::Explore, Some(question), config, &snapshot)?;
-                    progress("Writing DeepSeek response to cache");
-                    write_cached(config, &key, &content)?;
-                    content
-                }
-            }
-        } else {
-            request_model(Workflow::Explore, Some(question), config, &snapshot)?
-        };
-        let mut report = parse_report(&raw)?;
-        merge_local_structure(&mut report, &snapshot);
+        let report = ask_for_report(
+            Workflow::Explore,
+            Some(question),
+            config,
+            no_cache,
+            &snapshot,
+        )?;
         println!("\n{}\n", report.summary);
         if !report.risks.is_empty() {
             println!("Risks:");
@@ -310,22 +241,6 @@ fn scan_for_config(path: &std::path::Path, config: &Config) -> Result<ProjectSna
             max_concurrency: config.max_concurrency,
         },
     )
-}
-
-fn merge_local_structure(
-    report: &mut deepcode::report::AnalysisReport,
-    snapshot: &ProjectSnapshot,
-) {
-    let local = infer_structure(snapshot);
-    if report.structure.entrypoints.is_empty() {
-        report.structure.entrypoints = local.entrypoints;
-    }
-    if report.structure.modules.is_empty() {
-        report.structure.modules = local.modules;
-    }
-    if report.structure.dependencies.is_empty() {
-        report.structure.dependencies = local.dependencies;
-    }
 }
 
 fn docs_goal(kinds: &[deepcode::cli::DocKind]) -> String {
@@ -388,8 +303,49 @@ fn request_model(
 ) -> Result<String> {
     let client = DeepSeekClient::new(config)?;
     progress("Building DeepSeek chat messages");
-    let messages = build_messages(workflow, snapshot, goal)?;
-    client.complete_with_progress(&messages, true, |message| progress(message))
+    let messages = build_messages(workflow, snapshot, goal);
+    client.complete_with_progress(&messages, true, progress)
+}
+
+fn ask_for_report(
+    workflow: Workflow,
+    goal: Option<&str>,
+    config: &Config,
+    no_cache: bool,
+    snapshot: &ProjectSnapshot,
+) -> Result<AnalysisReport> {
+    let raw = ask_model(workflow, goal, config, no_cache, snapshot)?;
+    progress("Parsing DeepSeek JSON response");
+    let mut report = parse_report(&raw)?;
+    progress("Merging local structure evidence");
+    fill_missing_structure(&mut report, snapshot);
+    Ok(report)
+}
+
+fn ask_model(
+    workflow: Workflow,
+    goal: Option<&str>,
+    config: &Config,
+    no_cache: bool,
+    snapshot: &ProjectSnapshot,
+) -> Result<String> {
+    if !config.cache_enabled || no_cache {
+        progress("Cache disabled for this run");
+        return request_model(workflow, goal, config, snapshot);
+    }
+
+    progress("Checking DeepSeek response cache");
+    let key = cache_key(workflow, goal, config, snapshot)?;
+    if let Some(content) = read_cached(config, &key)? {
+        progress("Using cached DeepSeek response");
+        return Ok(content);
+    }
+
+    progress("No cache entry found; requesting DeepSeek");
+    let content = request_model(workflow, goal, config, snapshot)?;
+    progress("Writing DeepSeek response to cache");
+    write_cached(config, &key, &content)?;
+    Ok(content)
 }
 
 fn print_written_report(written: WrittenReport) {

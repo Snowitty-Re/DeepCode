@@ -118,54 +118,7 @@ impl Config {
         let raw: RawConfig = toml::from_str(&content)
             .with_context(|| format!("failed to parse config file {}", path.display()))?;
         let mut config = Config::default();
-        if let Some(api_key) = raw.api_key {
-            config.api_key = api_key;
-        }
-        if let Some(base_url) = raw.base_url {
-            config.base_url = base_url;
-        }
-        if let Some(model) = raw.model {
-            config.model = model;
-        }
-        if let Some(max_tokens) = raw.max_tokens {
-            config.max_tokens = max_tokens;
-        }
-        if let Some(thinking_enabled) = raw.thinking_enabled {
-            config.thinking_enabled = thinking_enabled;
-        }
-        if let Some(reasoning_effort) = raw.reasoning_effort {
-            config.reasoning_effort = reasoning_effort;
-        }
-        if let Some(retry_attempts) = raw.retry_attempts {
-            config.retry_attempts = retry_attempts;
-        }
-        if let Some(retry_backoff_ms) = raw.retry_backoff_ms {
-            config.retry_backoff_ms = retry_backoff_ms;
-        }
-        if let Some(api_timeout_secs) = raw.api_timeout_secs {
-            config.api_timeout_secs = api_timeout_secs;
-        }
-        if let Some(output_dir) = raw.output_dir {
-            config.output_dir = output_dir;
-        }
-        if let Some(format) = raw.format {
-            config.format = format;
-        }
-        if let Some(max_file_bytes) = raw.max_file_bytes {
-            config.max_file_bytes = max_file_bytes;
-        }
-        if let Some(max_files) = raw.max_files {
-            config.max_files = max_files;
-        }
-        if let Some(max_total_bytes) = raw.max_total_bytes {
-            config.max_total_bytes = max_total_bytes;
-        }
-        if let Some(max_concurrency) = raw.max_concurrency {
-            config.max_concurrency = max_concurrency;
-        }
-        if let Some(cache_enabled) = raw.cache_enabled {
-            config.cache_enabled = cache_enabled;
-        }
+        raw.apply_to(&mut config);
         config.validate()?;
         Ok(config)
     }
@@ -205,6 +158,33 @@ impl Config {
             bail!("max_concurrency must be greater than zero");
         }
         Ok(())
+    }
+}
+
+impl RawConfig {
+    fn apply_to(self, config: &mut Config) {
+        apply(self.api_key, &mut config.api_key);
+        apply(self.base_url, &mut config.base_url);
+        apply(self.model, &mut config.model);
+        apply(self.max_tokens, &mut config.max_tokens);
+        apply(self.thinking_enabled, &mut config.thinking_enabled);
+        apply(self.reasoning_effort, &mut config.reasoning_effort);
+        apply(self.retry_attempts, &mut config.retry_attempts);
+        apply(self.retry_backoff_ms, &mut config.retry_backoff_ms);
+        apply(self.api_timeout_secs, &mut config.api_timeout_secs);
+        apply(self.output_dir, &mut config.output_dir);
+        apply(self.format, &mut config.format);
+        apply(self.max_file_bytes, &mut config.max_file_bytes);
+        apply(self.max_files, &mut config.max_files);
+        apply(self.max_total_bytes, &mut config.max_total_bytes);
+        apply(self.max_concurrency, &mut config.max_concurrency);
+        apply(self.cache_enabled, &mut config.cache_enabled);
+    }
+}
+
+fn apply<T>(value: Option<T>, target: &mut T) {
+    if let Some(value) = value {
+        *target = value;
     }
 }
 

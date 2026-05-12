@@ -42,10 +42,10 @@ fn content_hashes(snapshot: &ProjectSnapshot, prefix: &str) -> BTreeMap<String, 
     snapshot
         .files
         .iter()
-        .filter_map(|file| {
+        .map(|file| {
             let path = file.path.to_string_lossy();
             let normalized = path.strip_prefix(prefix).unwrap_or(&path);
-            Some((normalized.to_string(), hash(&file.content)))
+            (normalized.to_string(), hash(&file.content))
         })
         .collect()
 }

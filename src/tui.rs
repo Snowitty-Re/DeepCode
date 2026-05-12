@@ -1,6 +1,6 @@
 use crate::cache::{cache_key, read_cached, write_cached};
 use crate::cli::Workflow;
-use crate::code_structure::infer_structure;
+use crate::code_structure::fill_missing_structure;
 use crate::config::Config;
 use crate::deepseek::DeepSeekClient;
 use crate::prompts::build_messages;
@@ -559,7 +559,7 @@ fn answer_question(
 
     send_status(tx, "正在解析 DeepSeek JSON 响应");
     let mut report = parse_report(&raw).map_err(|error| error.to_string())?;
-    merge_local_structure(&mut report, &snapshot);
+    fill_missing_structure(&mut report, &snapshot);
     Ok(format_chat_answer(&report))
 }
 
@@ -602,24 +602,10 @@ fn request_model(
     tx: &Sender<WorkerEvent>,
 ) -> Result<String, String> {
     let client = DeepSeekClient::new(config).map_err(|error| error.to_string())?;
-    let messages =
-        build_messages(Workflow::Chat, snapshot, Some(goal)).map_err(|error| error.to_string())?;
+    let messages = build_messages(Workflow::Chat, snapshot, Some(goal));
     client
         .complete_with_progress(&messages, true, |message| send_status(tx, message))
         .map_err(|error| error.to_string())
-}
-
-fn merge_local_structure(report: &mut AnalysisReport, snapshot: &ProjectSnapshot) {
-    let local = infer_structure(snapshot);
-    if report.structure.entrypoints.is_empty() {
-        report.structure.entrypoints = local.entrypoints;
-    }
-    if report.structure.modules.is_empty() {
-        report.structure.modules = local.modules;
-    }
-    if report.structure.dependencies.is_empty() {
-        report.structure.dependencies = local.dependencies;
-    }
 }
 
 fn format_chat_answer(report: &AnalysisReport) -> String {

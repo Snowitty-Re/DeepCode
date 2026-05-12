@@ -1,4 +1,4 @@
-use crate::report::{CodeStructure, DependencyEdge, StructureModule};
+use crate::report::{AnalysisReport, CodeStructure, DependencyEdge, StructureModule};
 use crate::scanner::{ProjectSnapshot, ScannedFile};
 
 pub fn infer_structure(snapshot: &ProjectSnapshot) -> CodeStructure {
@@ -24,6 +24,26 @@ pub fn infer_structure(snapshot: &ProjectSnapshot) -> CodeStructure {
         entrypoints,
         modules,
         dependencies,
+    }
+}
+
+pub fn fill_missing_structure(report: &mut AnalysisReport, snapshot: &ProjectSnapshot) {
+    if !report.structure.entrypoints.is_empty()
+        && !report.structure.modules.is_empty()
+        && !report.structure.dependencies.is_empty()
+    {
+        return;
+    }
+
+    let local = infer_structure(snapshot);
+    if report.structure.entrypoints.is_empty() {
+        report.structure.entrypoints = local.entrypoints;
+    }
+    if report.structure.modules.is_empty() {
+        report.structure.modules = local.modules;
+    }
+    if report.structure.dependencies.is_empty() {
+        report.structure.dependencies = local.dependencies;
     }
 }
 
