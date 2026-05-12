@@ -50,6 +50,7 @@ fn main() -> Result<()> {
         ),
         Commands::Diff(cmd) => run_diff(cmd.old_path, cmd.new_path, &config, cli.no_cache),
         Commands::Explore(cmd) => run_explore(cmd.path, &config, cli.no_cache),
+        Commands::Chat(cmd) => deepcode::tui::run_chat(cmd.path, &config, cli.no_cache),
     }
 }
 

@@ -80,6 +80,8 @@ pub enum Commands {
     Diff(DiffCommand),
     /// Start an interactive exploration session.
     Explore(PathCommand),
+    /// Start a Chinese terminal chat session over a file or project.
+    Chat(PathCommand),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -95,6 +97,7 @@ pub enum Workflow {
     Refactor,
     Diff,
     Explore,
+    Chat,
 }
 
 impl Workflow {
@@ -110,6 +113,7 @@ impl Workflow {
             Workflow::Refactor => "refactor",
             Workflow::Diff => "diff",
             Workflow::Explore => "explore",
+            Workflow::Chat => "chat",
         }
     }
 }

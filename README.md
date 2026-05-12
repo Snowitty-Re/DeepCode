@@ -15,6 +15,7 @@ deepcode refactor <path> --goal "reduce coupling in the API layer"
 deepcode docs <path> --kind readme --kind architecture
 deepcode diff <old-path> <new-path>
 deepcode explore <path>
+deepcode chat <path>
 deepcode ideas <path>
 deepcode report <path>
 ```
@@ -64,6 +65,13 @@ Reports are written to `output_dir` as Markdown, JSON, or both, depending on `fo
 
 `deepcode docs` also writes each generated document from the model response into a separate Markdown file under a `*-docs/` directory.
 
+`deepcode chat <path>` starts a Chinese terminal chat interface over a file or project. It scans the target, keeps conversation history on screen, and accepts direct questions such as "解释这个项目的启动流程" or "分析这个文件的风险". Built-in chat commands:
+
+- `/rescan` rescans the current target.
+- `/path <path>` switches to another file or folder and scans it.
+- `/clear` clears the visible conversation.
+- `/quit` exits the TUI.
+
 Model responses are cached under `output_dir/.cache` by workflow, goal, model, base URL, and scanned file contents. Use `--no-cache` to force a fresh API request:
 
 ```bash
@@ -100,3 +108,4 @@ The scanner also records local evidence before the model call:
 - P1 refactoring planning: `refactor --goal ...` focuses the plan and improvements sections on sequencing, risk, rollout, and tests.
 - P1 diff analysis: `diff <old> <new>` compares two scanned snapshots and includes local added, removed, modified, and unchanged file evidence.
 - P2 interactive exploration: `explore <path>` starts a simple REPL for repeated source-grounded questions over the same scanned context.
+- P2 terminal chat: `chat <path>` starts a Chinese TUI for repeated natural-language questions over a file or project, with scan/request status shown in the terminal.

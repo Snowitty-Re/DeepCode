@@ -187,6 +187,9 @@ fn workflow_instruction(workflow: Workflow) -> &'static str {
         Workflow::Explore => {
             "Task: answer the user's exploration question using the provided code context. Prefer concise, source-grounded answers and include follow-up questions when useful."
         }
+        Workflow::Chat => {
+            "Task: answer the user's chat question in Chinese using the provided code context. Be concrete, source-grounded, and preserve file paths exactly."
+        }
     }
 }
 
