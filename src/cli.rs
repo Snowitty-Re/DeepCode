@@ -15,6 +15,24 @@ pub struct Cli {
     /// Override the configured model.
     #[arg(long, global = true)]
     pub model: Option<String>,
+    /// Override the maximum output tokens requested from DeepSeek.
+    #[arg(long, global = true)]
+    pub max_tokens: Option<u32>,
+    /// Override whether DeepSeek thinking mode is enabled.
+    #[arg(long, global = true)]
+    pub thinking_enabled: Option<bool>,
+    /// Override DeepSeek reasoning effort when thinking mode is enabled.
+    #[arg(long, global = true)]
+    pub reasoning_effort: Option<String>,
+    /// Override how many times DeepCode attempts each DeepSeek request.
+    #[arg(long, global = true)]
+    pub retry_attempts: Option<usize>,
+    /// Override retry backoff in milliseconds.
+    #[arg(long, global = true)]
+    pub retry_backoff_ms: Option<u64>,
+    /// Override the total DeepSeek HTTP request timeout in seconds.
+    #[arg(long, global = true)]
+    pub api_timeout_secs: Option<u64>,
     /// Override the configured output directory.
     #[arg(long, global = true)]
     pub output_dir: Option<PathBuf>,

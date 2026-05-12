@@ -13,6 +13,10 @@ struct CacheInput<'a> {
     goal: Option<&'a str>,
     model: &'a str,
     base_url: &'a str,
+    max_tokens: u32,
+    thinking_enabled: bool,
+    reasoning_effort: &'a str,
+    api_timeout_secs: u64,
     snapshot: &'a ProjectSnapshot,
 }
 
@@ -27,6 +31,10 @@ pub fn cache_key(
         goal,
         model: &config.model,
         base_url: &config.base_url,
+        max_tokens: config.max_tokens,
+        thinking_enabled: config.thinking_enabled,
+        reasoning_effort: &config.reasoning_effort,
+        api_timeout_secs: config.api_timeout_secs,
         snapshot,
     };
     let bytes = serde_json::to_vec(&input).context("failed to serialize cache key input")?;
@@ -140,6 +148,12 @@ mod tests {
             api_key: "sk-test".to_string(),
             base_url: "https://api.deepseek.com".to_string(),
             model: "deepseek-v4-pro".to_string(),
+            max_tokens: 16_384,
+            thinking_enabled: false,
+            reasoning_effort: "high".to_string(),
+            retry_attempts: 3,
+            retry_backoff_ms: 1_000,
+            api_timeout_secs: 600,
             output_dir: std::env::temp_dir().join(format!("deepcode-cache-{unique}")),
             format: ReportFormat::Both,
             max_file_bytes: 200_000,

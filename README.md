@@ -27,6 +27,7 @@ Global overrides are available for one-off runs:
 deepcode --format markdown --output-dir reports --max-files 80 analyze ./src
 deepcode --max-concurrency 8 --max-total-bytes 4000000 understand .
 deepcode --model deepseek-v4-pro --base-url https://api.deepseek.com report .
+deepcode --max-tokens 32768 --retry-attempts 5 report .
 deepcode --config ./project.deepcode.toml --no-cache plan . --goal "split API and worker"
 ```
 
@@ -42,6 +43,12 @@ cp .deepcode.example.toml .deepcode.toml
 
 - `base_url = "https://api.deepseek.com"`
 - `model = "deepseek-v4-pro"`
+- `max_tokens = 16384`
+- `thinking_enabled = false`
+- `reasoning_effort = "high"`
+- `retry_attempts = 3`
+- `retry_backoff_ms = 1000`
+- `api_timeout_secs = 600`
 - `format = "both"`
 - `output_dir = "deepcode-reports"`
 - `max_file_bytes = 200000`
@@ -62,6 +69,8 @@ Model responses are cached under `output_dir/.cache` by workflow, goal, model, b
 ```bash
 deepcode --no-cache analyze ./src
 ```
+
+Progress and API diagnostics are written to stderr with a `[deepcode]` prefix. DeepCode reports scan progress, cache hits/misses, request attempts, retries, response parsing, and report writing. Retryable DeepSeek failures include transport errors, response body read timeouts, `429`, `500`, `502`, `503`, `504`, and empty JSON-mode message content.
 
 ## Scanning
 

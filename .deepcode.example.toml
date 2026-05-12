@@ -4,6 +4,12 @@
 api_key = "sk-your-deepseek-api-key"
 base_url = "https://api.deepseek.com"
 model = "deepseek-v4-pro"
+max_tokens = 16384
+thinking_enabled = false
+reasoning_effort = "high"
+retry_attempts = 3
+retry_backoff_ms = 1000
+api_timeout_secs = 600
 output_dir = "deepcode-reports"
 format = "both"
 max_file_bytes = 200000

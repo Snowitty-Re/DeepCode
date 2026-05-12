@@ -64,6 +64,24 @@ fn load_config(cli: &Cli) -> Result<Config> {
     if let Some(model) = &cli.model {
         config.model = model.clone();
     }
+    if let Some(max_tokens) = cli.max_tokens {
+        config.max_tokens = max_tokens;
+    }
+    if let Some(thinking_enabled) = cli.thinking_enabled {
+        config.thinking_enabled = thinking_enabled;
+    }
+    if let Some(reasoning_effort) = &cli.reasoning_effort {
+        config.reasoning_effort = reasoning_effort.clone();
+    }
+    if let Some(retry_attempts) = cli.retry_attempts {
+        config.retry_attempts = retry_attempts;
+    }
+    if let Some(retry_backoff_ms) = cli.retry_backoff_ms {
+        config.retry_backoff_ms = retry_backoff_ms;
+    }
+    if let Some(api_timeout_secs) = cli.api_timeout_secs {
+        config.api_timeout_secs = api_timeout_secs;
+    }
     if let Some(output_dir) = &cli.output_dir {
         config.output_dir = output_dir.clone();
     }
@@ -93,6 +111,11 @@ fn run_workflow(
     config: &Config,
     no_cache: bool,
 ) -> Result<()> {
+    progress(&format!(
+        "Scanning {} for {}",
+        path.display(),
+        workflow.as_str()
+    ));
     let snapshot = scan_path(
         &path,
         ScanOptions {
@@ -102,16 +125,30 @@ fn run_workflow(
             max_concurrency: config.max_concurrency,
         },
     )?;
+    progress(&format!(
+        "Scan complete: {} file(s), {} skipped, {} bytes, {} code lines",
+        snapshot.summary.files_read,
+        snapshot.summary.files_skipped,
+        snapshot.summary.bytes_read,
+        snapshot.summary.total_code_lines
+    ));
     let cache_enabled = config.cache_enabled && !no_cache;
+    progress(if cache_enabled {
+        "Checking DeepSeek response cache"
+    } else {
+        "Cache disabled for this run"
+    });
     let key = cache_key(workflow, goal.as_deref(), config, &snapshot)?;
     let raw = if cache_enabled {
         match read_cached(config, &key)? {
             Some(content) => {
-                println!("Using cached DeepSeek response");
+                progress("Using cached DeepSeek response");
                 content
             }
             None => {
+                progress("No cache entry found; requesting DeepSeek");
                 let content = request_model(workflow, goal.as_deref(), config, &snapshot)?;
+                progress("Writing DeepSeek response to cache");
                 write_cached(config, &key, &content)?;
                 content
             }
@@ -119,8 +156,14 @@ fn run_workflow(
     } else {
         request_model(workflow, goal.as_deref(), config, &snapshot)?
     };
+    progress("Parsing DeepSeek JSON response");
     let mut report = parse_report(&raw)?;
+    progress("Merging local structure evidence");
     merge_local_structure(&mut report, &snapshot);
+    progress(&format!(
+        "Writing report output to {}",
+        config.output_dir.display()
+    ));
     let written = write_report(config, workflow, &snapshot, &report)?;
     print_written_report(written);
     Ok(())
@@ -132,9 +175,26 @@ fn run_diff(
     config: &Config,
     no_cache: bool,
 ) -> Result<()> {
+    progress(&format!("Scanning old path {}", old_path.display()));
     let old_snapshot = scan_for_config(&old_path, config)?;
+    progress(&format!(
+        "Old scan complete: {} file(s), {} skipped",
+        old_snapshot.summary.files_read, old_snapshot.summary.files_skipped
+    ));
+    progress(&format!("Scanning new path {}", new_path.display()));
     let new_snapshot = scan_for_config(&new_path, config)?;
+    progress(&format!(
+        "New scan complete: {} file(s), {} skipped",
+        new_snapshot.summary.files_read, new_snapshot.summary.files_skipped
+    ));
     let local_diff = summarize_diff(&old_snapshot, &new_snapshot);
+    progress(&format!(
+        "Local diff evidence: {} added, {} removed, {} modified, {} unchanged",
+        local_diff.added.len(),
+        local_diff.removed.len(),
+        local_diff.modified.len(),
+        local_diff.unchanged.len()
+    ));
     let combined = combine_diff_snapshots(old_snapshot, new_snapshot);
     let goal = format!(
         "Compare old path {} to new path {}",
@@ -142,15 +202,22 @@ fn run_diff(
         new_path.display()
     );
     let cache_enabled = config.cache_enabled && !no_cache;
+    progress(if cache_enabled {
+        "Checking DeepSeek response cache"
+    } else {
+        "Cache disabled for this run"
+    });
     let key = cache_key(Workflow::Diff, Some(&goal), config, &combined)?;
     let raw = if cache_enabled {
         match read_cached(config, &key)? {
             Some(content) => {
-                println!("Using cached DeepSeek response");
+                progress("Using cached DeepSeek response");
                 content
             }
             None => {
+                progress("No cache entry found; requesting DeepSeek");
                 let content = request_model(Workflow::Diff, Some(&goal), config, &combined)?;
+                progress("Writing DeepSeek response to cache");
                 write_cached(config, &key, &content)?;
                 content
             }
@@ -158,7 +225,9 @@ fn run_diff(
     } else {
         request_model(Workflow::Diff, Some(&goal), config, &combined)?
     };
+    progress("Parsing DeepSeek JSON response");
     let mut report = parse_report(&raw)?;
+    progress("Merging local structure evidence");
     merge_local_structure(&mut report, &combined);
     if report.diff.added.is_empty()
         && report.diff.removed.is_empty()
@@ -175,7 +244,12 @@ fn run_diff(
 fn run_explore(path: std::path::PathBuf, config: &Config, no_cache: bool) -> Result<()> {
     use std::io::{self, Write};
 
+    progress(&format!("Scanning {} for explore mode", path.display()));
     let snapshot = scan_for_config(&path, config)?;
+    progress(&format!(
+        "Scan complete: {} file(s), {} skipped, {} bytes",
+        snapshot.summary.files_read, snapshot.summary.files_skipped, snapshot.summary.bytes_read
+    ));
     println!("DeepCode explore mode. Type a question, or :quit to exit.");
     loop {
         print!("deepcode> ");
@@ -195,10 +269,15 @@ fn run_explore(path: std::path::PathBuf, config: &Config, no_cache: bool) -> Res
         let key = cache_key(Workflow::Explore, Some(question), config, &snapshot)?;
         let raw = if cache_enabled {
             match read_cached(config, &key)? {
-                Some(content) => content,
+                Some(content) => {
+                    progress("Using cached DeepSeek response");
+                    content
+                }
                 None => {
+                    progress("No cache entry found; requesting DeepSeek");
                     let content =
                         request_model(Workflow::Explore, Some(question), config, &snapshot)?;
+                    progress("Writing DeepSeek response to cache");
                     write_cached(config, &key, &content)?;
                     content
                 }
@@ -307,8 +386,9 @@ fn request_model(
     snapshot: &ProjectSnapshot,
 ) -> Result<String> {
     let client = DeepSeekClient::new(config)?;
+    progress("Building DeepSeek chat messages");
     let messages = build_messages(workflow, snapshot, goal)?;
-    client.complete(&messages, true)
+    client.complete_with_progress(&messages, true, |message| progress(message))
 }
 
 fn print_written_report(written: WrittenReport) {
@@ -321,4 +401,8 @@ fn print_written_report(written: WrittenReport) {
     for path in written.document_paths {
         println!("Generated document: {}", path.display());
     }
+}
+
+fn progress(message: &str) {
+    eprintln!("[deepcode] {message}");
 }

@@ -11,6 +11,12 @@ pub struct Config {
     pub api_key: String,
     pub base_url: String,
     pub model: String,
+    pub max_tokens: u32,
+    pub thinking_enabled: bool,
+    pub reasoning_effort: String,
+    pub retry_attempts: usize,
+    pub retry_backoff_ms: u64,
+    pub api_timeout_secs: u64,
     pub output_dir: PathBuf,
     pub format: ReportFormat,
     pub max_file_bytes: u64,
@@ -53,6 +59,12 @@ struct RawConfig {
     api_key: Option<String>,
     base_url: Option<String>,
     model: Option<String>,
+    max_tokens: Option<u32>,
+    thinking_enabled: Option<bool>,
+    reasoning_effort: Option<String>,
+    retry_attempts: Option<usize>,
+    retry_backoff_ms: Option<u64>,
+    api_timeout_secs: Option<u64>,
     output_dir: Option<PathBuf>,
     format: Option<ReportFormat>,
     max_file_bytes: Option<u64>,
@@ -68,6 +80,12 @@ impl Default for Config {
             api_key: String::new(),
             base_url: "https://api.deepseek.com".to_string(),
             model: "deepseek-v4-pro".to_string(),
+            max_tokens: 16_384,
+            thinking_enabled: false,
+            reasoning_effort: "high".to_string(),
+            retry_attempts: 3,
+            retry_backoff_ms: 1_000,
+            api_timeout_secs: 600,
             output_dir: PathBuf::from("deepcode-reports"),
             format: ReportFormat::Both,
             max_file_bytes: 200_000,
@@ -109,6 +127,24 @@ impl Config {
         if let Some(model) = raw.model {
             config.model = model;
         }
+        if let Some(max_tokens) = raw.max_tokens {
+            config.max_tokens = max_tokens;
+        }
+        if let Some(thinking_enabled) = raw.thinking_enabled {
+            config.thinking_enabled = thinking_enabled;
+        }
+        if let Some(reasoning_effort) = raw.reasoning_effort {
+            config.reasoning_effort = reasoning_effort;
+        }
+        if let Some(retry_attempts) = raw.retry_attempts {
+            config.retry_attempts = retry_attempts;
+        }
+        if let Some(retry_backoff_ms) = raw.retry_backoff_ms {
+            config.retry_backoff_ms = retry_backoff_ms;
+        }
+        if let Some(api_timeout_secs) = raw.api_timeout_secs {
+            config.api_timeout_secs = api_timeout_secs;
+        }
         if let Some(output_dir) = raw.output_dir {
             config.output_dir = output_dir;
         }
@@ -143,6 +179,18 @@ impl Config {
         }
         if self.model.trim().is_empty() {
             bail!("model cannot be empty");
+        }
+        if self.max_tokens == 0 {
+            bail!("max_tokens must be greater than zero");
+        }
+        if self.thinking_enabled && !matches!(self.reasoning_effort.as_str(), "high" | "max") {
+            bail!("reasoning_effort must be high or max when thinking_enabled is true");
+        }
+        if self.retry_attempts == 0 {
+            bail!("retry_attempts must be greater than zero");
+        }
+        if self.api_timeout_secs == 0 {
+            bail!("api_timeout_secs must be greater than zero");
         }
         if self.max_file_bytes == 0 {
             bail!("max_file_bytes must be greater than zero");
@@ -194,6 +242,12 @@ mod tests {
         assert_eq!(config.api_key, "sk-test");
         assert_eq!(config.base_url, "https://api.deepseek.com");
         assert_eq!(config.model, "deepseek-v4-pro");
+        assert_eq!(config.max_tokens, 16_384);
+        assert!(!config.thinking_enabled);
+        assert_eq!(config.reasoning_effort, "high");
+        assert_eq!(config.retry_attempts, 3);
+        assert_eq!(config.retry_backoff_ms, 1_000);
+        assert_eq!(config.api_timeout_secs, 600);
         assert_eq!(config.output_dir, PathBuf::from("deepcode-reports"));
         assert_eq!(config.format, ReportFormat::Both);
         assert_eq!(config.max_file_bytes, 200_000);
