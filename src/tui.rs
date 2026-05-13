@@ -8,7 +8,10 @@ use crate::report::{parse_report, AnalysisReport};
 use crate::scanner::{scan_path, ProjectSnapshot, ScanOptions};
 use anyhow::Result;
 use crossterm::cursor::Show;
-use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyModifiers};
+use crossterm::event::{
+    self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, KeyboardEnhancementFlags,
+    PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
+};
 use crossterm::execute;
 use crossterm::terminal::{
     disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
@@ -71,6 +74,23 @@ enum WorkerEvent {
     Status(String),
     ScanComplete(Result<ProjectSnapshot, String>),
     AnswerComplete(Result<String, String>),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum KeyAction {
+    None,
+    Quit,
+    Submit,
+    Type(char),
+    Backspace,
+    DeleteWord,
+    ClearInput,
+    ClearChat,
+    Rescan,
+    FocusFiles,
+    FocusChat,
+    ToggleFocus,
+    MoveVertical(isize),
 }
 
 impl ChatApp {
@@ -143,18 +163,9 @@ impl ChatApp {
         if trimmed == "/quit" || trimmed == "/exit" {
             self.should_quit = true;
         } else if trimmed == "/clear" {
-            self.messages.clear();
-            self.chat_scroll = 0;
-            self.messages.push(ChatMessage {
-                role: ChatRole::System,
-                content: "对话已清空。".to_string(),
-            });
+            self.clear_chat();
         } else if trimmed == "/rescan" {
-            self.messages.push(ChatMessage {
-                role: ChatRole::System,
-                content: "开始重新扫描当前目标。".to_string(),
-            });
-            self.start_scan(tx);
+            self.rescan(tx);
         } else if let Some(path) = trimmed.strip_prefix("/path ") {
             let path = PathBuf::from(path.trim());
             self.target = path;
@@ -169,6 +180,23 @@ impl ChatApp {
                 content: "未知命令。可用 /rescan、/path <路径>、/clear、/quit。".to_string(),
             });
         }
+    }
+
+    fn clear_chat(&mut self) {
+        self.messages.clear();
+        self.chat_scroll = 0;
+        self.messages.push(ChatMessage {
+            role: ChatRole::System,
+            content: "对话已清空。".to_string(),
+        });
+    }
+
+    fn rescan(&mut self, tx: &Sender<WorkerEvent>) {
+        self.messages.push(ChatMessage {
+            role: ChatRole::System,
+            content: "开始重新扫描当前目标。".to_string(),
+        });
+        self.start_scan(tx);
     }
 
     fn handle_worker_event(&mut self, event: WorkerEvent) {
@@ -262,6 +290,23 @@ impl ChatApp {
             self.file_scroll = selected.saturating_sub(11);
         }
     }
+
+    fn toggle_focus(&mut self) {
+        self.focus = match self.focus {
+            FocusPane::Files => FocusPane::Chat,
+            FocusPane::Chat => FocusPane::Files,
+        };
+    }
+
+    fn move_or_scroll(&mut self, delta: isize) {
+        if self.focus == FocusPane::Files && self.input.is_empty() {
+            self.move_file_selection(delta);
+        } else if delta < 0 {
+            self.chat_scroll = self.chat_scroll.saturating_add(delta.unsigned_abs() as u16);
+        } else {
+            self.chat_scroll = self.chat_scroll.saturating_sub(delta as u16);
+        }
+    }
 }
 
 fn run_terminal(
@@ -270,8 +315,9 @@ fn run_terminal(
     tx: Sender<WorkerEvent>,
 ) -> Result<()> {
     enable_raw_mode()?;
-    let _guard = TerminalGuard;
     let mut stdout = io::stdout();
+    let keyboard_enhanced = enable_keyboard_enhancements(&mut stdout);
+    let _guard = TerminalGuard { keyboard_enhanced };
     execute!(stdout, EnterAlternateScreen)?;
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
@@ -293,15 +339,10 @@ fn run_terminal(
 }
 
 fn handle_key(key: KeyEvent, app: &mut ChatApp, tx: &Sender<WorkerEvent>) {
-    if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
-        app.should_quit = true;
-        return;
-    }
-    match key.code {
-        KeyCode::Esc => app.should_quit = true,
-        KeyCode::Left => app.focus = FocusPane::Files,
-        KeyCode::Right => app.focus = FocusPane::Chat,
-        KeyCode::Enter => {
+    match key_action(key) {
+        KeyAction::None => {}
+        KeyAction::Quit => app.should_quit = true,
+        KeyAction::Submit => {
             let input = app.input.trim().to_string();
             app.input.clear();
             if input.is_empty() {
@@ -318,40 +359,84 @@ fn handle_key(key: KeyEvent, app: &mut ChatApp, tx: &Sender<WorkerEvent>) {
                 app.ask(input, tx);
             }
         }
-        KeyCode::Char(character) => app.input.push(character),
-        KeyCode::Backspace => {
+        KeyAction::Type(character) => app.input.push(character),
+        KeyAction::Backspace => {
             app.input.pop();
         }
-        KeyCode::Up => {
-            if app.focus == FocusPane::Files && app.input.is_empty() {
-                app.move_file_selection(-1);
-            } else {
-                app.chat_scroll = app.chat_scroll.saturating_add(1);
-            }
-        }
-        KeyCode::Down => {
-            if app.focus == FocusPane::Files && app.input.is_empty() {
-                app.move_file_selection(1);
-            } else {
-                app.chat_scroll = app.chat_scroll.saturating_sub(1);
-            }
-        }
-        KeyCode::PageUp => {
-            if app.focus == FocusPane::Files && app.input.is_empty() {
-                app.move_file_selection(-8);
-            } else {
-                app.chat_scroll = app.chat_scroll.saturating_add(8);
-            }
-        }
-        KeyCode::PageDown => {
-            if app.focus == FocusPane::Files && app.input.is_empty() {
-                app.move_file_selection(8);
-            } else {
-                app.chat_scroll = app.chat_scroll.saturating_sub(8);
-            }
-        }
-        _ => {}
+        KeyAction::DeleteWord => delete_previous_word(&mut app.input),
+        KeyAction::ClearInput => app.input.clear(),
+        KeyAction::ClearChat => app.clear_chat(),
+        KeyAction::Rescan => app.rescan(tx),
+        KeyAction::FocusFiles => app.focus = FocusPane::Files,
+        KeyAction::FocusChat => app.focus = FocusPane::Chat,
+        KeyAction::ToggleFocus => app.toggle_focus(),
+        KeyAction::MoveVertical(delta) => app.move_or_scroll(delta),
     }
+}
+
+fn key_action(key: KeyEvent) -> KeyAction {
+    if key.kind == KeyEventKind::Release {
+        return KeyAction::None;
+    }
+
+    let control = key.modifiers.contains(KeyModifiers::CONTROL);
+    let option = key.modifiers.contains(KeyModifiers::ALT);
+    let command = key
+        .modifiers
+        .intersects(KeyModifiers::SUPER | KeyModifiers::META);
+
+    match key.code {
+        KeyCode::Esc => KeyAction::Quit,
+        KeyCode::Enter => KeyAction::Submit,
+        KeyCode::Tab | KeyCode::BackTab => KeyAction::ToggleFocus,
+        KeyCode::Left if option || command => KeyAction::FocusFiles,
+        KeyCode::Right if option || command => KeyAction::FocusChat,
+        KeyCode::Left => KeyAction::FocusFiles,
+        KeyCode::Right => KeyAction::FocusChat,
+        KeyCode::Up if option || command => KeyAction::MoveVertical(-8),
+        KeyCode::Down if option || command => KeyAction::MoveVertical(8),
+        KeyCode::Up => KeyAction::MoveVertical(-1),
+        KeyCode::Down => KeyAction::MoveVertical(1),
+        KeyCode::PageUp => KeyAction::MoveVertical(-8),
+        KeyCode::PageDown => KeyAction::MoveVertical(8),
+        KeyCode::Backspace if option || command || control => KeyAction::DeleteWord,
+        KeyCode::Backspace => KeyAction::Backspace,
+        KeyCode::Char('c') | KeyCode::Char('C') if control => KeyAction::Quit,
+        KeyCode::Char('d') | KeyCode::Char('D') if control => KeyAction::Quit,
+        KeyCode::Char('q') | KeyCode::Char('Q') if command => KeyAction::Quit,
+        KeyCode::Char('k') | KeyCode::Char('K') if command => KeyAction::ClearChat,
+        KeyCode::Char('l') | KeyCode::Char('L') if control => KeyAction::ClearChat,
+        KeyCode::Char('r') | KeyCode::Char('R') if control || command => KeyAction::Rescan,
+        KeyCode::Char('u') | KeyCode::Char('U') if control || command => KeyAction::ClearInput,
+        KeyCode::Char('w') | KeyCode::Char('W') if control || option => KeyAction::DeleteWord,
+        KeyCode::Char(character) if !control && !command => KeyAction::Type(character),
+        _ => KeyAction::None,
+    }
+}
+
+fn delete_previous_word(input: &mut String) {
+    while input.ends_with(char::is_whitespace) {
+        input.pop();
+    }
+    while input
+        .chars()
+        .last()
+        .is_some_and(|character| !character.is_whitespace())
+    {
+        input.pop();
+    }
+}
+
+fn enable_keyboard_enhancements(stdout: &mut io::Stdout) -> bool {
+    execute!(
+        stdout,
+        PushKeyboardEnhancementFlags(
+            KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES
+                | KeyboardEnhancementFlags::REPORT_EVENT_TYPES
+                | KeyboardEnhancementFlags::REPORT_ALTERNATE_KEYS
+        )
+    )
+    .is_ok()
 }
 
 fn draw(frame: &mut Frame<'_>, app: &ChatApp) {
@@ -416,7 +501,7 @@ fn draw(frame: &mut Frame<'_>, app: &ChatApp) {
             Span::raw(focus),
             Span::raw("  选中文件："),
             Span::styled(selected, Style::default().fg(Color::Cyan)),
-            Span::raw("  ←/→切换  ↑/↓选择或滚动  /rescan /path /clear /quit"),
+            Span::raw("  Tab/←/→切换  ↑/↓选择或滚动  Option+↑/↓快滚  Ctrl+R重扫  /quit"),
         ]),
     ]))
     .block(Block::default().borders(Borders::ALL));
@@ -639,12 +724,98 @@ fn send_status(tx: &Sender<WorkerEvent>, message: &str) {
     let _ = tx.send(WorkerEvent::Status(message.to_string()));
 }
 
-struct TerminalGuard;
+struct TerminalGuard {
+    keyboard_enhanced: bool,
+}
 
 impl Drop for TerminalGuard {
     fn drop(&mut self) {
         let _ = disable_raw_mode();
         let mut stdout = io::stdout();
+        if self.keyboard_enhanced {
+            let _ = execute!(stdout, PopKeyboardEnhancementFlags);
+        }
         let _ = execute!(stdout, LeaveAlternateScreen, Show);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn maps_basic_navigation_keys() {
+        assert_eq!(
+            key_action(key(KeyCode::Tab, KeyModifiers::empty())),
+            KeyAction::ToggleFocus
+        );
+        assert_eq!(
+            key_action(key(KeyCode::BackTab, KeyModifiers::SHIFT)),
+            KeyAction::ToggleFocus
+        );
+        assert_eq!(
+            key_action(key(KeyCode::Left, KeyModifiers::empty())),
+            KeyAction::FocusFiles
+        );
+        assert_eq!(
+            key_action(key(KeyCode::Right, KeyModifiers::empty())),
+            KeyAction::FocusChat
+        );
+        assert_eq!(
+            key_action(key(KeyCode::Up, KeyModifiers::empty())),
+            KeyAction::MoveVertical(-1)
+        );
+        assert_eq!(
+            key_action(key(KeyCode::PageDown, KeyModifiers::empty())),
+            KeyAction::MoveVertical(8)
+        );
+    }
+
+    #[test]
+    fn maps_macos_option_and_command_shortcuts() {
+        assert_eq!(
+            key_action(key(KeyCode::Up, KeyModifiers::ALT)),
+            KeyAction::MoveVertical(-8)
+        );
+        assert_eq!(
+            key_action(key(KeyCode::Down, KeyModifiers::SUPER)),
+            KeyAction::MoveVertical(8)
+        );
+        assert_eq!(
+            key_action(key(KeyCode::Char('q'), KeyModifiers::SUPER)),
+            KeyAction::Quit
+        );
+        assert_eq!(
+            key_action(key(KeyCode::Char('k'), KeyModifiers::SUPER)),
+            KeyAction::ClearChat
+        );
+        assert_eq!(
+            key_action(key(KeyCode::Backspace, KeyModifiers::ALT)),
+            KeyAction::DeleteWord
+        );
+    }
+
+    #[test]
+    fn ignores_release_events_from_enhanced_keyboards() {
+        let event = KeyEvent::new_with_kind(
+            KeyCode::Char('q'),
+            KeyModifiers::SUPER,
+            KeyEventKind::Release,
+        );
+
+        assert_eq!(key_action(event), KeyAction::None);
+    }
+
+    #[test]
+    fn deletes_previous_word_like_terminal_input() {
+        let mut input = "hello world  ".to_string();
+
+        delete_previous_word(&mut input);
+
+        assert_eq!(input, "hello ");
+    }
+
+    fn key(code: KeyCode, modifiers: KeyModifiers) -> KeyEvent {
+        KeyEvent::new(code, modifiers)
     }
 }

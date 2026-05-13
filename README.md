@@ -65,7 +65,7 @@ Reports are written to `output_dir` as Markdown, JSON, or both, depending on `fo
 
 `deepcode docs` also writes each generated document from the model response into a separate Markdown file under a `*-docs/` directory.
 
-`deepcode chat <path>` starts a Chinese terminal chat interface over a file or project. It scans the target, shows a left sidebar with target details, scan summary, and file list, keeps conversation history on the right, and accepts direct questions such as "解释这个项目的启动流程" or "分析这个文件的风险". Use `Left`/`Right` to switch focus between the file list and chat history. In the file list, `Up`/`Down` selects a file; follow-up questions prioritize the selected file. In the chat history, `Up`/`Down` scrolls. Built-in chat commands:
+`deepcode chat <path>` starts a Chinese terminal chat interface over a file or project. It scans the target, shows a left sidebar with target details, scan summary, and file list, keeps conversation history on the right, and accepts direct questions such as "解释这个项目的启动流程" or "分析这个文件的风险". Use `Tab`, `Left`, or `Right` to switch focus between the file list and chat history. In the file list, `Up`/`Down` selects a file; follow-up questions prioritize the selected file. In the chat history, `Up`/`Down` scrolls. `Option+Up`/`Option+Down` on macOS, or `Alt+Up`/`Alt+Down` elsewhere, moves by a larger step. Terminals that pass Command/Super keys can also use `Command+Q` to quit, `Command+K` to clear chat, and `Command+R` to rescan; use the command forms below when the terminal reserves those shortcuts. Built-in chat commands:
 
 - `/rescan` rescans the current target.
 - `/path <path>` switches to another file or folder and scans it.
