@@ -2,6 +2,7 @@ use crate::report::{
     AnalysisReport, CodeStructure, DependencyEdge, StructureModule, StructureSymbol,
 };
 use crate::scanner::{ProjectSnapshot, ScannedFile};
+use std::path::{Path, PathBuf};
 
 pub fn infer_structure(snapshot: &ProjectSnapshot) -> CodeStructure {
     let modules = snapshot.files.iter().map(infer_module).collect::<Vec<_>>();
@@ -11,16 +12,7 @@ pub fn infer_structure(snapshot: &ProjectSnapshot) -> CodeStructure {
         .filter(|file| is_entrypoint(file))
         .map(|file| file.path.display().to_string())
         .collect::<Vec<_>>();
-    let dependencies = modules
-        .iter()
-        .flat_map(|module| {
-            module.imports.iter().map(|import| DependencyEdge {
-                from: module.path.clone(),
-                to: import.clone(),
-                kind: "import".to_string(),
-            })
-        })
-        .collect();
+    let dependencies = infer_dependencies(snapshot);
 
     CodeStructure {
         entrypoints,
@@ -78,6 +70,8 @@ fn merge_unique_dependencies(target: &mut Vec<DependencyEdge>, source: &[Depende
             existing.from == dependency.from
                 && existing.to == dependency.to
                 && existing.kind == dependency.kind
+                && existing.target_type == dependency.target_type
+                && existing.evidence == dependency.evidence
         }) {
             target.push(dependency.clone());
         }
@@ -94,6 +88,51 @@ fn infer_module(file: &ScannedFile) -> StructureModule {
         symbols,
         symbol_details,
         imports: extract_imports(file),
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ResolvedDependency {
+    to: String,
+    target_type: String,
+}
+
+fn infer_dependencies(snapshot: &ProjectSnapshot) -> Vec<DependencyEdge> {
+    let known_paths = snapshot
+        .files
+        .iter()
+        .map(|file| file.path.clone())
+        .collect::<Vec<_>>();
+    let mut dependencies = Vec::new();
+    for file in &snapshot.files {
+        for import in extract_imports(file) {
+            let resolved = resolve_dependency(file, &import, &known_paths);
+            dependencies.push(DependencyEdge {
+                from: file.path.display().to_string(),
+                to: resolved.to,
+                kind: dependency_kind(file),
+                target_type: resolved.target_type,
+                evidence: import,
+            });
+        }
+    }
+    dependencies.sort_by(|left, right| {
+        left.from
+            .cmp(&right.from)
+            .then_with(|| left.kind.cmp(&right.kind))
+            .then_with(|| left.target_type.cmp(&right.target_type))
+            .then_with(|| left.to.cmp(&right.to))
+            .then_with(|| left.evidence.cmp(&right.evidence))
+    });
+    dependencies.dedup();
+    dependencies
+}
+
+fn dependency_kind(file: &ScannedFile) -> String {
+    if is_test_file(file.path.as_path()) {
+        "test".to_string()
+    } else {
+        "import".to_string()
     }
 }
 
@@ -181,29 +220,511 @@ fn extract_imports(file: &ScannedFile) -> Vec<String> {
     let mut imports = Vec::new();
     for line in file.content.lines() {
         let trimmed = line.trim();
-        if let Some(value) = trimmed.strip_prefix("use ") {
-            imports.push(value.trim_end_matches(';').to_string());
-        } else if let Some(value) = trimmed.strip_prefix("mod ") {
-            imports.push(value.trim_end_matches(';').to_string());
-        } else if let Some(value) = trimmed.strip_prefix("pub mod ") {
-            imports.push(value.trim_end_matches(';').to_string());
-        } else if let Some(value) = trimmed.strip_prefix("import ") {
-            imports.push(value.trim_end_matches(';').to_string());
-        } else if let Some(value) = trimmed.strip_prefix("from ") {
-            imports.push(value.to_string());
-        } else if let Some(value) = trimmed.strip_prefix("package ") {
-            imports.push(format!("package {}", value.trim_end_matches(';')));
-        } else if let Some(value) = trimmed.strip_prefix("require(") {
-            imports.push(
-                value
-                    .trim_matches(|c| c == ')' || c == '"' || c == '\'')
-                    .to_string(),
-            );
+        if should_skip_symbol_line(trimmed) {
+            continue;
+        }
+        match file.language.as_str() {
+            "Rust" => extract_rust_import(trimmed, &mut imports),
+            "TypeScript" | "JavaScript" | "JavaScript JSX" => {
+                extract_js_import(trimmed, &mut imports)
+            }
+            "Python" => extract_python_import(trimmed, &mut imports),
+            "Go" => extract_go_import(trimmed, &mut imports),
+            _ => extract_generic_import(trimmed, &mut imports),
         }
     }
     imports.sort();
     imports.dedup();
     imports
+}
+
+fn extract_rust_import(line: &str, imports: &mut Vec<String>) {
+    if let Some(value) = line.strip_prefix("use ") {
+        imports.push(value.trim_end_matches(';').to_string());
+    } else if let Some(value) = line.strip_prefix("mod ") {
+        imports.push(value.trim_end_matches(';').to_string());
+    } else if let Some(value) = line.strip_prefix("pub mod ") {
+        imports.push(value.trim_end_matches(';').to_string());
+    }
+}
+
+fn extract_js_import(line: &str, imports: &mut Vec<String>) {
+    if let Some(value) = js_import_specifier(line) {
+        imports.push(value);
+    }
+    if let Some(value) = require_specifier(line) {
+        imports.push(value);
+    }
+}
+
+fn js_import_specifier(line: &str) -> Option<String> {
+    let value = line.strip_prefix("import ")?;
+    if let Some((_, specifier)) = value.rsplit_once(" from ") {
+        return quoted_specifier(specifier.trim_end_matches(';'));
+    }
+    quoted_specifier(value.trim_end_matches(';'))
+}
+
+fn require_specifier(line: &str) -> Option<String> {
+    let start = line.find("require(")?;
+    let value = &line[start + "require(".len()..];
+    let end = value.find(')')?;
+    quoted_specifier(&value[..end])
+}
+
+fn quoted_specifier(value: &str) -> Option<String> {
+    let trimmed = value.trim();
+    if trimmed.len() < 2 {
+        return None;
+    }
+    let quote = trimmed.as_bytes()[0] as char;
+    if quote != '"' && quote != '\'' {
+        return None;
+    }
+    let rest = &trimmed[1..];
+    let end = rest.find(quote)?;
+    Some(rest[..end].to_string())
+}
+
+fn extract_python_import(line: &str, imports: &mut Vec<String>) {
+    if let Some(value) = line.strip_prefix("from ") {
+        let module = value.split(" import ").next().unwrap_or(value).trim();
+        if !module.is_empty() {
+            imports.push(module.to_string());
+        }
+    } else if let Some(value) = line.strip_prefix("import ") {
+        for module in value.split(',') {
+            let module = module.split_whitespace().next().unwrap_or_default();
+            if !module.is_empty() {
+                imports.push(module.to_string());
+            }
+        }
+    }
+}
+
+fn extract_go_import(line: &str, imports: &mut Vec<String>) {
+    if let Some(value) = line.strip_prefix("import ") {
+        if let Some(specifier) = quoted_specifier(value) {
+            imports.push(specifier);
+        }
+    } else if let Some(specifier) = quoted_specifier(line) {
+        imports.push(specifier);
+    }
+}
+
+fn extract_generic_import(line: &str, imports: &mut Vec<String>) {
+    if let Some(value) = line.strip_prefix("import ") {
+        imports.push(value.trim_end_matches(';').to_string());
+    } else if let Some(value) = line.strip_prefix("from ") {
+        imports.push(value.to_string());
+    } else if let Some(value) = require_specifier(line) {
+        imports.push(value);
+    }
+}
+
+fn resolve_dependency(
+    file: &ScannedFile,
+    import: &str,
+    known_paths: &[PathBuf],
+) -> ResolvedDependency {
+    match file.language.as_str() {
+        "Rust" => resolve_rust_dependency(file.path.as_path(), import, known_paths),
+        "TypeScript" | "JavaScript" | "JavaScript JSX" => {
+            resolve_js_dependency(file.path.as_path(), import, known_paths)
+        }
+        "Python" => resolve_python_dependency(file.path.as_path(), import, known_paths),
+        "Go" => resolve_go_dependency(import),
+        _ => resolve_generic_dependency(file.path.as_path(), import, known_paths),
+    }
+}
+
+fn resolve_rust_dependency(
+    from_path: &Path,
+    import: &str,
+    known_paths: &[PathBuf],
+) -> ResolvedDependency {
+    let segments = rust_import_segments(import);
+    let Some(first) = segments.first().map(String::as_str) else {
+        return unresolved(import);
+    };
+    if matches!(first, "std" | "core" | "alloc") {
+        return standard_library(first);
+    }
+    if first == "crate" {
+        if let Some(path) = resolve_rust_crate_path(&segments[1..], known_paths) {
+            return internal(path);
+        }
+        return unresolved(import);
+    }
+    if first == "self" || first == "super" {
+        if let Some(path) = resolve_rust_relative_path(from_path, &segments, known_paths) {
+            return internal(path);
+        }
+        return unresolved(import);
+    }
+    if let Some(path) = resolve_rust_sibling_module(from_path, &segments, known_paths) {
+        return internal(path);
+    }
+    external(first)
+}
+
+fn rust_import_segments(import: &str) -> Vec<String> {
+    import
+        .split("::")
+        .map(|segment| {
+            segment
+                .trim()
+                .trim_matches(|character: char| {
+                    matches!(character, ';' | '{' | '}' | '(' | ')' | ',' | ' ')
+                })
+                .to_string()
+        })
+        .filter(|segment| {
+            !segment.is_empty()
+                && segment != "*"
+                && !segment.contains(',')
+                && !segment.starts_with('{')
+                && !segment.ends_with('}')
+        })
+        .collect()
+}
+
+fn resolve_rust_crate_path(segments: &[String], known_paths: &[PathBuf]) -> Option<String> {
+    resolve_module_segments(
+        Path::new("src"),
+        segments,
+        rust_candidate_suffixes(),
+        known_paths,
+    )
+}
+
+fn resolve_rust_relative_path(
+    from_path: &Path,
+    segments: &[String],
+    known_paths: &[PathBuf],
+) -> Option<String> {
+    let mut base = rust_module_base_dir(from_path);
+    let mut remaining = segments;
+    while let Some(first) = remaining.first().map(String::as_str) {
+        match first {
+            "self" => remaining = &remaining[1..],
+            "super" => {
+                base.pop();
+                remaining = &remaining[1..];
+            }
+            _ => break,
+        }
+    }
+    resolve_module_segments(&base, remaining, rust_candidate_suffixes(), known_paths)
+}
+
+fn resolve_rust_sibling_module(
+    from_path: &Path,
+    segments: &[String],
+    known_paths: &[PathBuf],
+) -> Option<String> {
+    resolve_module_segments(
+        &rust_module_base_dir(from_path),
+        segments,
+        rust_candidate_suffixes(),
+        known_paths,
+    )
+}
+
+fn rust_module_base_dir(from_path: &Path) -> PathBuf {
+    from_path
+        .parent()
+        .map(Path::to_path_buf)
+        .unwrap_or_default()
+}
+
+fn rust_candidate_suffixes() -> &'static [&'static str] {
+    &["rs", "mod.rs"]
+}
+
+fn resolve_js_dependency(
+    from_path: &Path,
+    import: &str,
+    known_paths: &[PathBuf],
+) -> ResolvedDependency {
+    if import.starts_with('.') {
+        let base = from_path
+            .parent()
+            .map(Path::to_path_buf)
+            .unwrap_or_default();
+        if let Some(path) =
+            resolve_relative_import(&base, import, js_candidate_suffixes(), known_paths)
+        {
+            return internal(path);
+        }
+        return unresolved(import);
+    }
+    let package = package_root(import);
+    if is_node_builtin(package) {
+        return standard_library(package.strip_prefix("node:").unwrap_or(package));
+    }
+    external(package)
+}
+
+fn js_candidate_suffixes() -> &'static [&'static str] {
+    &[
+        "ts",
+        "tsx",
+        "js",
+        "jsx",
+        "mjs",
+        "cjs",
+        "json",
+        "index.ts",
+        "index.tsx",
+        "index.js",
+        "index.jsx",
+    ]
+}
+
+fn resolve_python_dependency(
+    from_path: &Path,
+    import: &str,
+    known_paths: &[PathBuf],
+) -> ResolvedDependency {
+    if import.starts_with('.') {
+        let base = from_path
+            .parent()
+            .map(Path::to_path_buf)
+            .unwrap_or_default();
+        let stripped = import.trim_start_matches('.');
+        if let Some(path) = resolve_module_segments(
+            &base,
+            &dotted_segments(stripped),
+            python_candidate_suffixes(),
+            known_paths,
+        ) {
+            return internal(path);
+        }
+        return unresolved(import);
+    }
+    let segments = dotted_segments(import);
+    if let Some(path) = resolve_module_segments(
+        Path::new(""),
+        &segments,
+        python_candidate_suffixes(),
+        known_paths,
+    ) {
+        return internal(path);
+    }
+    let root = segments.first().map(String::as_str).unwrap_or(import);
+    if is_python_standard_library(root) {
+        return standard_library(root);
+    }
+    external(root)
+}
+
+fn python_candidate_suffixes() -> &'static [&'static str] {
+    &["py", "__init__.py"]
+}
+
+fn resolve_go_dependency(import: &str) -> ResolvedDependency {
+    if is_go_standard_library(import) {
+        standard_library(import)
+    } else {
+        external(import)
+    }
+}
+
+fn resolve_generic_dependency(
+    from_path: &Path,
+    import: &str,
+    known_paths: &[PathBuf],
+) -> ResolvedDependency {
+    let base = from_path
+        .parent()
+        .map(Path::to_path_buf)
+        .unwrap_or_default();
+    if import.starts_with('.') {
+        if let Some(path) =
+            resolve_relative_import(&base, import, js_candidate_suffixes(), known_paths)
+        {
+            return internal(path);
+        }
+        unresolved(import)
+    } else {
+        external(package_root(import))
+    }
+}
+
+fn resolve_module_segments(
+    base: &Path,
+    segments: &[String],
+    suffixes: &[&str],
+    known_paths: &[PathBuf],
+) -> Option<String> {
+    for end in (1..=segments.len()).rev() {
+        let mut candidate = base.to_path_buf();
+        for segment in &segments[..end] {
+            candidate.push(segment);
+        }
+        if let Some(path) = resolve_candidate_path(&candidate, suffixes, known_paths) {
+            return Some(path);
+        }
+    }
+    None
+}
+
+fn resolve_relative_import(
+    base: &Path,
+    import: &str,
+    suffixes: &[&str],
+    known_paths: &[PathBuf],
+) -> Option<String> {
+    let candidate = normalize_relative_path(base.join(import));
+    resolve_candidate_path(&candidate, suffixes, known_paths)
+}
+
+fn resolve_candidate_path(
+    candidate: &Path,
+    suffixes: &[&str],
+    known_paths: &[PathBuf],
+) -> Option<String> {
+    if known_paths.iter().any(|path| path == candidate) {
+        return Some(candidate.display().to_string());
+    }
+    for suffix in suffixes {
+        let path = if matches!(*suffix, "mod.rs" | "__init__.py") || suffix.starts_with("index.") {
+            candidate.join(suffix)
+        } else {
+            candidate.with_extension(suffix)
+        };
+        if known_paths.iter().any(|known| known == &path) {
+            return Some(path.display().to_string());
+        }
+    }
+    None
+}
+
+fn normalize_relative_path(path: PathBuf) -> PathBuf {
+    let mut normalized = PathBuf::new();
+    for component in path.components() {
+        match component {
+            std::path::Component::CurDir => {}
+            std::path::Component::ParentDir => {
+                normalized.pop();
+            }
+            other => normalized.push(other.as_os_str()),
+        }
+    }
+    normalized
+}
+
+fn dotted_segments(value: &str) -> Vec<String> {
+    value
+        .split('.')
+        .filter(|segment| !segment.is_empty())
+        .map(ToString::to_string)
+        .collect()
+}
+
+fn package_root(import: &str) -> &str {
+    if import.starts_with('@') {
+        let mut parts = import.split('/');
+        let scope = parts.next().unwrap_or(import);
+        let package = parts.next().unwrap_or_default();
+        if package.is_empty() {
+            scope
+        } else {
+            let end = scope.len() + 1 + package.len();
+            &import[..end]
+        }
+    } else {
+        import.split('/').next().unwrap_or(import)
+    }
+}
+
+fn is_test_file(path: &Path) -> bool {
+    let value = path.to_string_lossy().to_lowercase();
+    value.contains("/test")
+        || value.contains("/tests/")
+        || value.contains("__tests__")
+        || value.ends_with("_test.go")
+        || value.ends_with("_test.rs")
+        || value.ends_with(".test.ts")
+        || value.ends_with(".test.tsx")
+        || value.ends_with(".spec.ts")
+        || value.ends_with(".spec.tsx")
+        || value.ends_with("_test.py")
+        || value.starts_with("tests/")
+}
+
+fn is_node_builtin(value: &str) -> bool {
+    let value = value.strip_prefix("node:").unwrap_or(value);
+    matches!(
+        value,
+        "assert"
+            | "buffer"
+            | "child_process"
+            | "crypto"
+            | "events"
+            | "fs"
+            | "http"
+            | "https"
+            | "net"
+            | "os"
+            | "path"
+            | "process"
+            | "stream"
+            | "url"
+            | "util"
+    )
+}
+
+fn is_python_standard_library(value: &str) -> bool {
+    matches!(
+        value,
+        "asyncio"
+            | "collections"
+            | "dataclasses"
+            | "functools"
+            | "json"
+            | "logging"
+            | "os"
+            | "pathlib"
+            | "re"
+            | "sys"
+            | "time"
+            | "typing"
+            | "unittest"
+    )
+}
+
+fn is_go_standard_library(value: &str) -> bool {
+    !value.contains('.') && !value.starts_with("./") && !value.starts_with("../")
+}
+
+fn internal(path: String) -> ResolvedDependency {
+    ResolvedDependency {
+        to: path,
+        target_type: "internal".to_string(),
+    }
+}
+
+fn external(name: &str) -> ResolvedDependency {
+    ResolvedDependency {
+        to: name.to_string(),
+        target_type: "external".to_string(),
+    }
+}
+
+fn standard_library(name: &str) -> ResolvedDependency {
+    ResolvedDependency {
+        to: name.to_string(),
+        target_type: "standard-library".to_string(),
+    }
+}
+
+fn unresolved(import: &str) -> ResolvedDependency {
+    ResolvedDependency {
+        to: import.to_string(),
+        target_type: "unresolved".to_string(),
+    }
 }
 
 fn should_skip_symbol_line(line: &str) -> bool {
@@ -464,7 +985,9 @@ mod tests {
         assert_eq!(structure.modules[0].symbol_details[0].name, "App");
         assert_eq!(structure.modules[0].symbol_details[0].kind, "type");
         assert_eq!(structure.modules[0].symbol_details[0].visibility, "private");
-        assert_eq!(structure.dependencies[0].to, "std::fs");
+        assert_eq!(structure.dependencies[0].to, "std");
+        assert_eq!(structure.dependencies[0].target_type, "standard-library");
+        assert_eq!(structure.dependencies[0].evidence, "std::fs");
     }
 
     #[test]
@@ -611,6 +1134,144 @@ mod tests {
             .contains(&"main".to_string()));
         assert_eq!(report.structure.modules[0].symbol_details[0].line, 2);
         assert_eq!(report.structure.modules[0].imports, vec!["std::fs"]);
-        assert_eq!(report.structure.dependencies[0].to, "std::fs");
+        assert_eq!(report.structure.dependencies[0].to, "std");
+        assert_eq!(
+            report.structure.dependencies[0].target_type,
+            "standard-library"
+        );
+        assert_eq!(report.structure.dependencies[0].evidence, "std::fs");
+    }
+
+    #[test]
+    fn classifies_internal_external_standard_and_test_dependencies() {
+        let snapshot = ProjectSnapshot {
+            root: PathBuf::from("/tmp/app"),
+            files: vec![
+                ScannedFile {
+                    path: PathBuf::from("src/lib.rs"),
+                    language: "Rust".to_string(),
+                    bytes: 120,
+                    truncated: false,
+                    metrics: FileMetrics {
+                        lines: 5,
+                        code_lines: 5,
+                        comment_lines: 0,
+                        blank_lines: 0,
+                        longest_line: 40,
+                    },
+                    content: "use crate::scanner::scan_path;\nuse serde::Serialize;\nuse std::fs;\nmod config;\n"
+                        .to_string(),
+                },
+                ScannedFile {
+                    path: PathBuf::from("src/scanner.rs"),
+                    language: "Rust".to_string(),
+                    bytes: 20,
+                    truncated: false,
+                    metrics: FileMetrics {
+                        lines: 1,
+                        code_lines: 1,
+                        comment_lines: 0,
+                        blank_lines: 0,
+                        longest_line: 12,
+                    },
+                    content: "fn scan_path() {}\n".to_string(),
+                },
+                ScannedFile {
+                    path: PathBuf::from("src/config.rs"),
+                    language: "Rust".to_string(),
+                    bytes: 20,
+                    truncated: false,
+                    metrics: FileMetrics {
+                        lines: 1,
+                        code_lines: 1,
+                        comment_lines: 0,
+                        blank_lines: 0,
+                        longest_line: 12,
+                    },
+                    content: "struct Config;\n".to_string(),
+                },
+                ScannedFile {
+                    path: PathBuf::from("src/app.test.ts"),
+                    language: "TypeScript".to_string(),
+                    bytes: 80,
+                    truncated: false,
+                    metrics: FileMetrics {
+                        lines: 3,
+                        code_lines: 3,
+                        comment_lines: 0,
+                        blank_lines: 0,
+                        longest_line: 32,
+                    },
+                    content:
+                        "import { run } from './lib';\nimport { test } from 'vitest';\nimport fs from 'node:fs';\n"
+                            .to_string(),
+                },
+                ScannedFile {
+                    path: PathBuf::from("src/lib.ts"),
+                    language: "TypeScript".to_string(),
+                    bytes: 20,
+                    truncated: false,
+                    metrics: FileMetrics {
+                        lines: 1,
+                        code_lines: 1,
+                        comment_lines: 0,
+                        blank_lines: 0,
+                        longest_line: 12,
+                    },
+                    content: "export function run() {}\n".to_string(),
+                },
+            ],
+            skipped: vec![],
+            summary: ScanSummary::default(),
+        };
+
+        let structure = infer_structure(&snapshot);
+
+        assert!(structure
+            .dependencies
+            .iter()
+            .any(|dependency| dependency.from == "src/lib.rs"
+                && dependency.to == "src/scanner.rs"
+                && dependency.kind == "import"
+                && dependency.target_type == "internal"
+                && dependency.evidence == "crate::scanner::scan_path"));
+        assert!(structure
+            .dependencies
+            .iter()
+            .any(|dependency| dependency.from == "src/lib.rs"
+                && dependency.to == "src/config.rs"
+                && dependency.target_type == "internal"
+                && dependency.evidence == "config"));
+        assert!(structure
+            .dependencies
+            .iter()
+            .any(|dependency| dependency.from == "src/lib.rs"
+                && dependency.to == "serde"
+                && dependency.target_type == "external"));
+        assert!(structure
+            .dependencies
+            .iter()
+            .any(|dependency| dependency.from == "src/lib.rs"
+                && dependency.to == "std"
+                && dependency.target_type == "standard-library"));
+        assert!(structure.dependencies.iter().any(|dependency| {
+            dependency.from == "src/app.test.ts"
+                && dependency.to == "src/lib.ts"
+                && dependency.kind == "test"
+                && dependency.target_type == "internal"
+                && dependency.evidence == "./lib"
+        }));
+        assert!(structure.dependencies.iter().any(|dependency| {
+            dependency.from == "src/app.test.ts"
+                && dependency.to == "vitest"
+                && dependency.kind == "test"
+                && dependency.target_type == "external"
+        }));
+        assert!(structure.dependencies.iter().any(|dependency| {
+            dependency.from == "src/app.test.ts"
+                && dependency.to == "fs"
+                && dependency.kind == "test"
+                && dependency.target_type == "standard-library"
+        }));
     }
 }

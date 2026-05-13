@@ -32,8 +32,10 @@ const SCHEMA_PROMPT: &str = r#"Return this exact JSON shape:
     "dependencies": [
       {
         "from": "relative/path",
-        "to": "module or dependency",
-        "kind": "import|runtime|data|test"
+        "to": "resolved relative module path or dependency name",
+        "kind": "import|test|runtime|data",
+        "target_type": "internal|external|standard-library|unresolved|unknown",
+        "evidence": "raw import/use/require/package statement"
       }
     ]
   },

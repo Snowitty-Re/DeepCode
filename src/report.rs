@@ -72,6 +72,10 @@ pub struct DependencyEdge {
     pub from: String,
     pub to: String,
     pub kind: String,
+    #[serde(default)]
+    pub target_type: String,
+    #[serde(default)]
+    pub evidence: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -413,9 +417,19 @@ fn append_structure(markdown: &mut String, structure: &CodeStructure) {
         markdown.push_str("- None\n\n");
     } else {
         for dependency in &structure.dependencies {
+            let target_type = if dependency.target_type.is_empty() {
+                "unknown"
+            } else {
+                dependency.target_type.as_str()
+            };
+            let evidence = if dependency.evidence.is_empty() {
+                String::new()
+            } else {
+                format!(" evidence: `{}`", dependency.evidence)
+            };
             markdown.push_str(&format!(
-                "- `{}` -> `{}` ({})\n",
-                dependency.from, dependency.to, dependency.kind
+                "- `{}` -> `{}` ({}, {}){}\n",
+                dependency.from, dependency.to, dependency.kind, target_type, evidence
             ));
         }
         markdown.push('\n');

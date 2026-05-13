@@ -7,7 +7,7 @@ use sha2::{Digest, Sha256};
 use std::fs;
 use std::path::PathBuf;
 
-const CACHE_INPUT_VERSION: u8 = 2;
+const CACHE_INPUT_VERSION: u8 = 3;
 
 #[derive(Debug, Serialize)]
 struct CacheInput<'a> {
