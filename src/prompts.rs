@@ -18,6 +18,14 @@ const SCHEMA_PROMPT: &str = r#"Return this exact JSON shape:
         "language": "language",
         "responsibility": "module responsibility",
         "symbols": ["important symbols"],
+        "symbol_details": [
+          {
+            "name": "symbol name",
+            "kind": "function|type|class|trait|module|constant|variable|method|macro|unknown",
+            "visibility": "public|restricted|private|exported|unknown",
+            "line": 1
+          }
+        ],
         "imports": ["important imports"]
       }
     ],

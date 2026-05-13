@@ -54,7 +54,17 @@ pub struct StructureModule {
     #[serde(default)]
     pub symbols: Vec<String>,
     #[serde(default)]
+    pub symbol_details: Vec<StructureSymbol>,
+    #[serde(default)]
     pub imports: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct StructureSymbol {
+    pub name: String,
+    pub kind: String,
+    pub visibility: String,
+    pub line: usize,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -393,6 +403,7 @@ fn append_structure(markdown: &mut String, structure: &CodeStructure) {
                 module.path, module.language, module.responsibility
             ));
             append_inline_list(markdown, "Symbols", &module.symbols);
+            append_symbol_details(markdown, &module.symbol_details);
             append_inline_list(markdown, "Imports", &module.imports);
         }
         markdown.push('\n');
@@ -538,6 +549,19 @@ fn append_diff(markdown: &mut String, diff: &DiffSummary) {
 fn append_inline_list(markdown: &mut String, label: &str, items: &[String]) {
     if !items.is_empty() {
         markdown.push_str(&format!("  - {label}: {}\n", items.join(", ")));
+    }
+}
+
+fn append_symbol_details(markdown: &mut String, symbols: &[StructureSymbol]) {
+    if symbols.is_empty() {
+        return;
+    }
+    markdown.push_str("  - Symbol details:\n");
+    for symbol in symbols {
+        markdown.push_str(&format!(
+            "    - line {} `{}` [{} {}]\n",
+            symbol.line, symbol.name, symbol.visibility, symbol.kind
+        ));
     }
 }
 

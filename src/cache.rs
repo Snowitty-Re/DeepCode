@@ -7,8 +7,11 @@ use sha2::{Digest, Sha256};
 use std::fs;
 use std::path::PathBuf;
 
+const CACHE_INPUT_VERSION: u8 = 2;
+
 #[derive(Debug, Serialize)]
 struct CacheInput<'a> {
+    version: u8,
     workflow: Workflow,
     goal: Option<&'a str>,
     model: &'a str,
@@ -27,6 +30,7 @@ pub fn cache_key(
     snapshot: &ProjectSnapshot,
 ) -> Result<String> {
     let input = CacheInput {
+        version: CACHE_INPUT_VERSION,
         workflow,
         goal,
         model: &config.model,
