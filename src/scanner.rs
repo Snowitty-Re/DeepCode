@@ -1,4 +1,4 @@
-use anyhow::{Context, Result};
+use anyhow::{anyhow, bail, Context, Result};
 use serde::Serialize;
 use std::collections::BTreeMap;
 use std::ffi::OsStr;
@@ -304,17 +304,18 @@ fn scan_file(
         .take(read_limit as u64)
         .read_to_end(&mut bytes_buffer)
         .with_context(|| format!("failed to read {}", path.display()))?;
-    let truncated =
-        bytes_buffer.len() > options.max_file_bytes as usize || bytes > options.max_file_bytes;
-    if bytes_buffer.len() > options.max_file_bytes as usize {
-        truncate_to_char_boundary(&mut bytes_buffer, options.max_file_bytes as usize);
+    let max_file_bytes = options.max_file_bytes.min(usize::MAX as u64) as usize;
+    let truncated = bytes_buffer.len() > max_file_bytes || bytes > options.max_file_bytes;
+    if bytes_buffer.len() > max_file_bytes {
+        truncate_to_char_boundary(&mut bytes_buffer, max_file_bytes)
+            .map_err(|error| anyhow!("failed to read text file {}: {error}", path.display()))?;
     }
     let mut content = String::from_utf8(bytes_buffer)
-        .with_context(|| format!("failed to read text file {}", path.display()))?;
+        .map_err(|error| anyhow!("failed to read text file {}: {error}", path.display()))?;
+    let metrics = measure_content(&content);
     if truncated {
         content.push_str("\n\n[deepcode: file content truncated]\n");
     }
-    let metrics = measure_content(&content);
 
     Ok(ScannedFile {
         path: relative_path(root, path),
@@ -326,10 +327,15 @@ fn scan_file(
     })
 }
 
-fn truncate_to_char_boundary(bytes: &mut Vec<u8>, max_len: usize) {
+fn truncate_to_char_boundary(bytes: &mut Vec<u8>, max_len: usize) -> Result<()> {
     bytes.truncate(max_len);
-    while std::str::from_utf8(bytes).is_err() && !bytes.is_empty() {
-        bytes.pop();
+    match std::str::from_utf8(bytes) {
+        Ok(_) => Ok(()),
+        Err(error) if error.error_len().is_none() => {
+            bytes.truncate(error.valid_up_to());
+            Ok(())
+        }
+        Err(error) => bail!("invalid UTF-8 at byte {}", error.valid_up_to()),
     }
 }
 
@@ -644,6 +650,50 @@ mod tests {
         assert_eq!(snapshot.files.len(), 1);
         assert!(snapshot.files[0].truncated);
         assert!(snapshot.files[0].content.starts_with("你"));
+    }
+
+    #[test]
+    fn rejects_invalid_utf8_inside_truncated_prefix() {
+        let dir = temp_dir("truncated-binary");
+        let file = dir.join("bad.bin");
+        fs::write(&file, [b'a', 0xff, b'b', b'c']).unwrap();
+
+        let snapshot = scan_path(
+            &file,
+            ScanOptions {
+                max_file_bytes: 3,
+                max_files: 100,
+                max_total_bytes: 1_000,
+                max_concurrency: 2,
+            },
+        )
+        .unwrap();
+
+        assert!(snapshot.files.is_empty());
+        assert_eq!(snapshot.skipped.len(), 1);
+        assert!(snapshot.skipped[0].reason.contains("invalid UTF-8"));
+    }
+
+    #[test]
+    fn truncated_marker_does_not_count_as_code() {
+        let dir = temp_dir("truncate-metrics");
+        let file = dir.join("big.txt");
+        fs::write(&file, "one\ntwo\nthree\n").unwrap();
+
+        let snapshot = scan_path(
+            &file,
+            ScanOptions {
+                max_file_bytes: 7,
+                max_files: 100,
+                max_total_bytes: 1_000,
+                max_concurrency: 2,
+            },
+        )
+        .unwrap();
+
+        assert_eq!(snapshot.files.len(), 1);
+        assert!(snapshot.files[0].truncated);
+        assert_eq!(snapshot.files[0].metrics.code_lines, 2);
     }
 
     fn temp_dir(name: &str) -> PathBuf {

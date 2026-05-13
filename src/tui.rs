@@ -627,10 +627,10 @@ fn answer_question(
     send_status(tx, "正在构建中文分析问题");
     let goal = build_chat_goal(&question, selected_file.as_deref());
     let cache_enabled = config.cache_enabled && !no_cache;
-    let key = cache_key(Workflow::Chat, Some(&goal), &config, &snapshot)
-        .map_err(|error| error.to_string())?;
     let raw = if cache_enabled {
         send_status(tx, "正在检查缓存");
+        let key = cache_key(Workflow::Chat, Some(&goal), &config, &snapshot)
+            .map_err(|error| error.to_string())?;
         match read_cached(&config, &key).map_err(|error| error.to_string())? {
             Some(content) => {
                 send_status(tx, "命中缓存，正在解析结果");

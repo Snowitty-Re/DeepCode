@@ -4,6 +4,7 @@ use crate::scanner::ProjectSnapshot;
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::collections::BTreeSet;
 use std::fs;
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -270,17 +271,32 @@ fn write_generated_documents(
     fs::create_dir_all(&docs_dir)
         .with_context(|| format!("failed to create docs directory {}", docs_dir.display()))?;
     let mut paths = Vec::new();
+    let mut used_filenames = BTreeSet::new();
     for document in &report.documents {
-        let path = docs_dir.join(format!(
-            "{}-{}.md",
-            document.kind.as_str(),
-            slugify(&document.title)
-        ));
+        let filename = unique_markdown_filename(
+            &format!("{}-{}", document.kind.as_str(), slugify(&document.title)),
+            &mut used_filenames,
+        );
+        let path = docs_dir.join(filename);
         fs::write(&path, &document.content)
             .with_context(|| format!("failed to write generated document {}", path.display()))?;
         paths.push(path);
     }
     Ok(paths)
+}
+
+fn unique_markdown_filename(stem: &str, used_filenames: &mut BTreeSet<String>) -> String {
+    for suffix in 0.. {
+        let filename = if suffix == 0 {
+            format!("{stem}.md")
+        } else {
+            format!("{stem}-{suffix}.md")
+        };
+        if used_filenames.insert(filename.clone()) {
+            return filename;
+        }
+    }
+    unreachable!("unbounded suffix loop always returns")
 }
 
 impl DocumentKind {
@@ -529,7 +545,9 @@ fn timestamp() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
-        .as_secs()
+        .as_millis()
+        .try_into()
+        .unwrap_or(u64::MAX)
 }
 
 #[cfg(test)]
@@ -673,5 +691,63 @@ mod tests {
         assert_eq!(written.document_paths.len(), 1);
         assert!(written.document_paths[0].ends_with("readme-getting-started.md"));
         assert!(written.document_paths[0].is_file());
+    }
+
+    #[test]
+    fn keeps_duplicate_generated_document_titles() {
+        let dir = std::env::temp_dir().join(format!(
+            "deepcode-docs-duplicates-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let snapshot = ProjectSnapshot {
+            root: PathBuf::from("/tmp/app"),
+            files: vec![],
+            skipped: vec![],
+            summary: crate::scanner::ScanSummary::default(),
+        };
+        let report = AnalysisReport {
+            summary: "Docs".to_string(),
+            structure: CodeStructure::default(),
+            responsibilities: vec![],
+            core_components: vec![],
+            quality: QualityReport::default(),
+            improvements: vec![],
+            tests: vec![],
+            plan: vec![],
+            ideas: vec![],
+            documents: vec![
+                GeneratedDocument {
+                    title: "Getting Started".to_string(),
+                    kind: DocumentKind::Readme,
+                    content: "first".to_string(),
+                },
+                GeneratedDocument {
+                    title: "Getting Started".to_string(),
+                    kind: DocumentKind::Readme,
+                    content: "second".to_string(),
+                },
+            ],
+            diff: DiffSummary::default(),
+            risks: vec![],
+        };
+
+        let written =
+            write_report_with_format(&dir, ReportFormat::Json, Workflow::Docs, &snapshot, &report)
+                .unwrap();
+
+        assert_eq!(written.document_paths.len(), 2);
+        assert!(written.document_paths[0].ends_with("readme-getting-started.md"));
+        assert!(written.document_paths[1].ends_with("readme-getting-started-1.md"));
+        assert_eq!(
+            fs::read_to_string(&written.document_paths[0]).unwrap(),
+            "first"
+        );
+        assert_eq!(
+            fs::read_to_string(&written.document_paths[1]).unwrap(),
+            "second"
+        );
     }
 }
